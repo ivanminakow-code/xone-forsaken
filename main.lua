@@ -54,7 +54,7 @@ local ORBIT_COOLDOWN = 20
 local ORBIT_HEIGHT = 2
 
 -- ПАРАМЕТРЫ TP HIT
-local TP_HIT_DURATION = 0.2
+local TP_HIT_DURATION = 0.5
 local TP_HIT_COOLDOWN = 3
 
 -- РАЗМЕРЫ GUI
