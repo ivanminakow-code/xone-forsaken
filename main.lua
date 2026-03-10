@@ -1,9 +1,9 @@
 --[[
-    FORSAKEN MOBILE MENU v24.0
+    FORSAKEN MOBILE MENU v29.0
     ИЗМЕНЕНИЯ:
-    - TP Slash: после орбиты возвращает на исходную позицию
-    - Убран Auto Generator
-    - TP Hit по ЛКМ (рывок к игроку и обратно)
+    - Убран телепорт в центр (500)
+    - Добавлен РЕЖИМ БОГА (цикл: math.huge здоровье)
+    - ∞ Бесконечный телепорт наверх (10000) остался
 ]]
 
 local Players = game:GetService("Players")
@@ -36,17 +36,23 @@ local AimbotActive = false
 local TPSlashEnabled = false
 local TPHitEnabled = false
 local CtrlClickTPEnabled = false
+local GodModeEnabled = false -- НОВЫЙ РЕЖИМ БОГА
+local InfiniteUpTeleportEnabled = false
 local TPSlashCooldown = false
 local TPHitCooldown = false
 local TPWalkSpeed = 0.02
 local BodyFly = nil
 local NoclipConnection = nil
 local TPWalkConnection = nil
+local GodModeLoop = nil -- Цикл для режима бога
+local InfiniteUpLoop = nil
 local CurrentTab = "ИГРОК"
 local AimbotTarget = nil
 local ESPHighlights = {}
+local LastESPUpdate = 0
+local ESPUpdateInterval = 1
 
--- ПАРАМЕТРЫ TP SLASH (С ВОЗВРАТОМ)
+-- ПАРАМЕТРЫ TP SLASH
 local ORBIT_RADIUS = 5
 local ORBIT_SPEED = 8
 local ORBIT_DURATION = 2.5
@@ -54,8 +60,12 @@ local ORBIT_COOLDOWN = 20
 local ORBIT_HEIGHT = 2
 
 -- ПАРАМЕТРЫ TP HIT
-local TP_HIT_DURATION = 0.5
+local TP_HIT_DURATION = 0.2
 local TP_HIT_COOLDOWN = 3
+
+-- ПАРАМЕТРЫ БЕСКОНЕЧНОГО ТЕЛЕПОРТА
+local INFINITE_UP_HEIGHT = 10000
+local INFINITE_UP_INTERVAL = 0.1
 
 -- РАЗМЕРЫ GUI
 local ViewportSize = Camera.ViewportSize
@@ -63,7 +73,7 @@ local ScreenWidth = ViewportSize.X
 local ScreenHeight = ViewportSize.Y
 
 local MenuWidth = math.min(500, ScreenWidth * 0.9)
-local MenuHeight = math.min(450, ScreenHeight * 0.8)
+local MenuHeight = math.min(500, ScreenHeight * 0.85)
 local ButtonSize = math.min(60, ScreenWidth * 0.1)
 local AimbotButtonSize = math.min(70, ScreenWidth * 0.1)
 
@@ -79,7 +89,9 @@ local colors = {
     white = Color3.fromRGB(255, 255, 255),
     border = Color3.fromRGB(45, 45, 55),
     purple = Color3.fromRGB(160, 100, 255),
-    orange = Color3.fromRGB(255, 140, 0)
+    orange = Color3.fromRGB(255, 140, 0),
+    god = Color3.fromRGB(255, 215, 0), -- Золотой для режима бога
+    infinite = Color3.fromRGB(255, 105, 180) -- Розовый для бесконечного телепорта
 }
 
 -- ========== СОЗДАНИЕ GUI ==========
@@ -185,7 +197,7 @@ Corner.Parent = MainFrame
 
 -- Верхняя полоса
 local TitleBar = Instance.new("Frame")
-TitleBar.Size = UDim2.new(1, 0, 0, MenuHeight * 0.09)
+TitleBar.Size = UDim2.new(1, 0, 0, MenuHeight * 0.08)
 TitleBar.BackgroundColor3 = colors.bg2
 TitleBar.BorderSizePixel = 0
 TitleBar.Parent = MainFrame
@@ -201,7 +213,7 @@ Logo.BackgroundTransparency = 1
 Logo.Text = "XONE"
 Logo.TextColor3 = colors.accent
 Logo.Font = Enum.Font.GothamBold
-Logo.TextSize = MenuHeight * 0.045
+Logo.TextSize = MenuHeight * 0.04
 Logo.TextXAlignment = Enum.TextXAlignment.Left
 Logo.Parent = TitleBar
 
@@ -212,7 +224,7 @@ GameTitle.BackgroundTransparency = 1
 GameTitle.Text = "| FORSAKEN"
 GameTitle.TextColor3 = colors.text2
 GameTitle.Font = Enum.Font.GothamSemibold
-GameTitle.TextSize = MenuHeight * 0.04
+GameTitle.TextSize = MenuHeight * 0.035
 GameTitle.TextXAlignment = Enum.TextXAlignment.Left
 GameTitle.Parent = TitleBar
 
@@ -220,31 +232,31 @@ local VersionLabel = Instance.new("TextLabel")
 VersionLabel.Size = UDim2.new(0, MenuWidth * 0.15, 1, 0)
 VersionLabel.Position = UDim2.new(0, MenuWidth * 0.4, 0, 0)
 VersionLabel.BackgroundTransparency = 1
-VersionLabel.Text = "v24.0"
+VersionLabel.Text = "v29.0"
 VersionLabel.TextColor3 = colors.text2
 VersionLabel.Font = Enum.Font.Gotham
-VersionLabel.TextSize = MenuHeight * 0.035
+VersionLabel.TextSize = MenuHeight * 0.03
 VersionLabel.TextXAlignment = Enum.TextXAlignment.Left
 VersionLabel.Parent = TitleBar
 
 local CloseButton = Instance.new("TextButton")
-CloseButton.Size = UDim2.new(0, MenuHeight * 0.06, 0, MenuHeight * 0.06)
-CloseButton.Position = UDim2.new(1, -MenuHeight * 0.08, 0.5, -MenuHeight * 0.03)
+CloseButton.Size = UDim2.new(0, MenuHeight * 0.05, 0, MenuHeight * 0.05)
+CloseButton.Position = UDim2.new(1, -MenuHeight * 0.07, 0.5, -MenuHeight * 0.025)
 CloseButton.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
 CloseButton.Text = "✕"
 CloseButton.TextColor3 = colors.text
 CloseButton.Font = Enum.Font.GothamBold
-CloseButton.TextSize = MenuHeight * 0.03
+CloseButton.TextSize = MenuHeight * 0.025
 CloseButton.Parent = TitleBar
 
 local CloseCorner = Instance.new("UICorner")
-CloseCorner.CornerRadius = UDim.new(0, MenuHeight * 0.01)
+CloseCorner.CornerRadius = UDim.new(0, MenuHeight * 0.008)
 CloseCorner.Parent = CloseButton
 
 -- ========== ВКЛАДКИ ==========
 local TabsFrame = Instance.new("Frame")
-TabsFrame.Size = UDim2.new(1, 0, 0, MenuHeight * 0.08)
-TabsFrame.Position = UDim2.new(0, 0, 0, MenuHeight * 0.09)
+TabsFrame.Size = UDim2.new(1, 0, 0, MenuHeight * 0.07)
+TabsFrame.Position = UDim2.new(0, 0, 0, MenuHeight * 0.08)
 TabsFrame.BackgroundColor3 = colors.bg2
 TabsFrame.BorderSizePixel = 0
 TabsFrame.Parent = MainFrame
@@ -258,7 +270,7 @@ PlayerTab.BackgroundTransparency = 1
 PlayerTab.Text = "ИГРОК"
 PlayerTab.TextColor3 = colors.accent
 PlayerTab.Font = Enum.Font.GothamBold
-PlayerTab.TextSize = MenuHeight * 0.022
+PlayerTab.TextSize = MenuHeight * 0.02
 PlayerTab.Parent = TabsFrame
 
 local VisualTab = Instance.new("TextButton")
@@ -268,7 +280,7 @@ VisualTab.BackgroundTransparency = 1
 VisualTab.Text = "ВИЗУАЛ"
 VisualTab.TextColor3 = colors.text2
 VisualTab.Font = Enum.Font.GothamBold
-VisualTab.TextSize = MenuHeight * 0.022
+VisualTab.TextSize = MenuHeight * 0.02
 VisualTab.Parent = TabsFrame
 
 local TeleportTab = Instance.new("TextButton")
@@ -278,7 +290,7 @@ TeleportTab.BackgroundTransparency = 1
 TeleportTab.Text = "ТЕЛЕПОРТ"
 TeleportTab.TextColor3 = colors.text2
 TeleportTab.Font = Enum.Font.GothamBold
-TeleportTab.TextSize = MenuHeight * 0.022
+TeleportTab.TextSize = MenuHeight * 0.02
 TeleportTab.Parent = TabsFrame
 
 local CombatTab = Instance.new("TextButton")
@@ -288,7 +300,7 @@ CombatTab.BackgroundTransparency = 1
 CombatTab.Text = "БОЙ"
 CombatTab.TextColor3 = colors.text2
 CombatTab.Font = Enum.Font.GothamBold
-CombatTab.TextSize = MenuHeight * 0.022
+CombatTab.TextSize = MenuHeight * 0.02
 CombatTab.Parent = TabsFrame
 
 local ItemsTab = Instance.new("TextButton")
@@ -298,7 +310,7 @@ ItemsTab.BackgroundTransparency = 1
 ItemsTab.Text = "ПРЕДМЕТЫ"
 ItemsTab.TextColor3 = colors.text2
 ItemsTab.Font = Enum.Font.GothamBold
-ItemsTab.TextSize = MenuHeight * 0.022
+ItemsTab.TextSize = MenuHeight * 0.02
 ItemsTab.Parent = TabsFrame
 
 local TabIndicator = Instance.new("Frame")
@@ -309,8 +321,8 @@ TabIndicator.BorderSizePixel = 0
 TabIndicator.Parent = TabsFrame
 
 -- ========== КОНТЕЙНЕРЫ ==========
-local ContainerY = MenuHeight * 0.18
-local ContainerHeight = MenuHeight * 0.73
+local ContainerY = MenuHeight * 0.16
+local ContainerHeight = MenuHeight * 0.75
 
 local PlayerContainer = Instance.new("Frame")
 PlayerContainer.Size = UDim2.new(1, -20, 0, ContainerHeight)
@@ -420,6 +432,47 @@ local function CreateXONECheckbox(parent, name, posY, defaultValue, callback)
     end)
     
     return frame, checkFill
+end
+
+-- ========== ФУНКЦИЯ СОЗДАНИЯ КНОПКИ ДЕЙСТВИЯ ==========
+local function CreateActionButton(parent, name, posY, color, callback)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.07)
+    frame.Position = UDim2.new(0, 0, 0, posY)
+    frame.BackgroundTransparency = 1
+    frame.Parent = parent
+    
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(1, -20, 1, -10)
+    button.Position = UDim2.new(0, 10, 0, 5)
+    button.BackgroundColor3 = color or colors.accent
+    button.Text = name
+    button.TextColor3 = colors.text
+    button.Font = Enum.Font.GothamBold
+    button.TextSize = ContainerHeight * 0.035
+    button.Parent = frame
+    
+    local btnCorner = Instance.new("UICorner")
+    btnCorner.CornerRadius = UDim.new(0, 8)
+    btnCorner.Parent = button
+    
+    button.MouseButton1Click:Connect(function()
+        callback()
+    end)
+    
+    button.MouseEnter:Connect(function()
+        button.BackgroundColor3 = Color3.fromRGB(
+            math.min(color.R * 255 + 30, 255),
+            math.min(color.G * 255 + 30, 255),
+            math.min(color.B * 255 + 30, 255)
+        )
+    end)
+    
+    button.MouseLeave:Connect(function()
+        button.BackgroundColor3 = color
+    end)
+    
+    return frame
 end
 
 -- ========== ФУНКЦИЯ СОЗДАНИЯ КНОПКИ ТЕЛЕПОРТА ==========
@@ -583,10 +636,150 @@ local tpFrame, tpCheck = CreateXONECheckbox(PlayerContainer, "ТП Ходьба 
     end
 end)
 
+-- ========== ЗДОРОВЬЕ (РЕЖИМ БОГА В ЦИКЛЕ) ==========
+local HealthTitle = Instance.new("TextLabel")
+HealthTitle.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
+HealthTitle.Position = UDim2.new(0, 0, 0, ContainerHeight * 0.23)
+HealthTitle.BackgroundTransparency = 1
+HealthTitle.Text = "ЗДОРОВЬЕ"
+HealthTitle.TextColor3 = colors.accent
+HealthTitle.Font = Enum.Font.GothamBold
+HealthTitle.TextSize = ContainerHeight * 0.03
+HealthTitle.TextXAlignment = Enum.TextXAlignment.Left
+HealthTitle.Parent = PlayerContainer
+
+-- Функция для режима бога в цикле
+local function startGodMode()
+    if GodModeLoop then
+        GodModeLoop:Disconnect()
+        GodModeLoop = nil
+    end
+    
+    if not GodModeEnabled then return end
+    
+    -- Сначала устанавливаем параметры
+    local character = LocalPlayer.Character
+    if character then
+        local humanoid = character:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.MaxHealth = math.huge
+            humanoid.Health = math.huge
+        end
+    end
+    
+    -- Запускаем цикл для постоянной поддержки
+    GodModeLoop = RunService.Heartbeat:Connect(function()
+        local character = LocalPlayer.Character
+        if not character then return end
+        
+        local humanoid = character:FindFirstChild("Humanoid")
+        if not humanoid then return end
+        
+        -- Постоянно устанавливаем MaxHealth и Health в math.huge
+        humanoid.MaxHealth = math.huge
+        humanoid.Health = math.huge
+    end)
+    
+    -- Также отслеживаем появление нового персонажа
+    LocalPlayer.CharacterAdded:Connect(function(newChar)
+        task.wait(0.5)
+        if GodModeEnabled then
+            local humanoid = newChar:FindFirstChild("Humanoid")
+            if humanoid then
+                humanoid.MaxHealth = math.huge
+                humanoid.Health = math.huge
+            end
+        end
+    end)
+end
+
+-- Чекбокс для режима бога (в цикле)
+local godFrame, godCheck = CreateXONECheckbox(PlayerContainer, "👑 РЕЖИМ БОГА (то робит то нет)", ContainerHeight * 0.28, false, function(state)
+    GodModeEnabled = state
+    startGodMode()
+end)
+
+local godInfo = Instance.new("TextLabel")
+godInfo.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
+godInfo.Position = UDim2.new(0, 25, 0, ContainerHeight * 0.34)
+godInfo.BackgroundTransparency = 1
+godInfo.Text = "Бесконечное здоровье (постоянный цикл)"
+godInfo.TextColor3 = colors.text2
+godInfo.Font = Enum.Font.Gotham
+godInfo.TextSize = ContainerHeight * 0.025
+godInfo.TextXAlignment = Enum.TextXAlignment.Left
+godInfo.Parent = PlayerContainer
+
+-- ========== БЕСКОНЕЧНЫЙ ТЕЛЕПОРТ НАВЕРХ ==========
+local InfiniteTitle = Instance.new("TextLabel")
+InfiniteTitle.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
+InfiniteTitle.Position = UDim2.new(0, 0, 0, ContainerHeight * 0.39)
+InfiniteTitle.BackgroundTransparency = 1
+InfiniteTitle.Text = "БЕСКОНЕЧНЫЙ ТЕЛЕПОРТ"
+InfiniteTitle.TextColor3 = colors.accent
+InfiniteTitle.Font = Enum.Font.GothamBold
+InfiniteTitle.TextSize = ContainerHeight * 0.03
+InfiniteTitle.TextXAlignment = Enum.TextXAlignment.Left
+InfiniteTitle.Parent = PlayerContainer
+
+-- Функция для бесконечного телепорта наверх
+local function startInfiniteUpTeleport()
+    if InfiniteUpLoop then
+        InfiniteUpLoop:Disconnect()
+        InfiniteUpLoop = nil
+    end
+    
+    if not InfiniteUpTeleportEnabled then return end
+    
+    InfiniteUpLoop = RunService.Heartbeat:Connect(function()
+        local character = LocalPlayer.Character
+        if not character then return end
+        
+        local rootPart = character:FindFirstChild("HumanoidRootPart")
+        if not rootPart then return end
+        
+        -- Получаем текущую позицию
+        local currentPos = rootPart.Position
+        
+        -- Телепортируем на 10000 студий вверх (сохраняя X и Z)
+        local newPosition = Vector3.new(currentPos.X, currentPos.Y + INFINITE_UP_HEIGHT, currentPos.Z)
+        
+        -- Применяем телепорт
+        rootPart.CFrame = CFrame.new(newPosition)
+        
+        -- Синхронизируем остальные части
+        for _, part in pairs(character:GetChildren()) do
+            if part:IsA("BasePart") and part ~= rootPart then
+                part.CFrame = rootPart.CFrame
+            end
+        end
+        
+        -- Небольшая задержка для плавности
+        task.wait(INFINITE_UP_INTERVAL)
+    end)
+end
+
+-- Чекбокс для бесконечного телепорта наверх
+local infiniteFrame, infiniteCheck = CreateXONECheckbox(PlayerContainer, "∞ Бесконечный телепорт вверх (10000)", ContainerHeight * 0.44, false, function(state)
+    InfiniteUpTeleportEnabled = state
+    startInfiniteUpTeleport()
+end)
+
+local infiniteInfo = Instance.new("TextLabel")
+infiniteInfo.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
+infiniteInfo.Position = UDim2.new(0, 25, 0, ContainerHeight * 0.50)
+infiniteInfo.BackgroundTransparency = 1
+infiniteInfo.Text = "Телепортирует на 10000 ст. вверх каждые 0.1 сек"
+infiniteInfo.TextColor3 = colors.text2
+infiniteInfo.Font = Enum.Font.Gotham
+infiniteInfo.TextSize = ContainerHeight * 0.025
+infiniteInfo.TextXAlignment = Enum.TextXAlignment.Left
+infiniteInfo.Parent = PlayerContainer
+
 -- ========== CTRL+CLICK TP ==========
 local CtrlTitle = Instance.new("TextLabel")
 CtrlTitle.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-CtrlTitle.Position = UDim2.new(0, 0, 0, ContainerHeight * 0.23)
+CtrlTitle.Position = UDim2.new(0, 0, 0, ContainerHeight * 0.55)
 CtrlTitle.BackgroundTransparency = 1
 CtrlTitle.Text = "ТЕЛЕПОРТ"
 CtrlTitle.TextColor3 = colors.accent
@@ -595,13 +788,13 @@ CtrlTitle.TextSize = ContainerHeight * 0.03
 CtrlTitle.TextXAlignment = Enum.TextXAlignment.Left
 CtrlTitle.Parent = PlayerContainer
 
-local ctrlClickFrame, ctrlClickCheck = CreateXONECheckbox(PlayerContainer, "Ctrl+Click TP", ContainerHeight * 0.28, false, function(state)
+local ctrlClickFrame, ctrlClickCheck = CreateXONECheckbox(PlayerContainer, "Ctrl+Click TP", ContainerHeight * 0.60, false, function(state)
     CtrlClickTPEnabled = state
 end)
 
 local ctrlInfo = Instance.new("TextLabel")
 ctrlInfo.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-ctrlInfo.Position = UDim2.new(0, 25, 0, ContainerHeight * 0.33)
+ctrlInfo.Position = UDim2.new(0, 25, 0, ContainerHeight * 0.66)
 ctrlInfo.BackgroundTransparency = 1
 ctrlInfo.Text = "Зажми Ctrl + ЛКМ для телепорта"
 ctrlInfo.TextColor3 = colors.text2
@@ -653,12 +846,10 @@ local aimbotFrame, aimbotCheck = CreateXONECheckbox(CombatContainer, "Аимбо
     end
 end)
 
--- TP Slash (с возвратом)
 local tpSlashFrame, tpSlashCheck = CreateXONECheckbox(CombatContainer, "TP Slash (Q) - орбита", ContainerHeight * 0.11, false, function(state)
     TPSlashEnabled = state
 end)
 
--- TP Hit (по ЛКМ)
 local tpHitFrame, tpHitCheck = CreateXONECheckbox(CombatContainer, "TP Hit (ЛКМ) - рывок к игроку", ContainerHeight * 0.17, false, function(state)
     TPHitEnabled = state
 end)
@@ -667,7 +858,7 @@ local infoLabel = Instance.new("TextLabel")
 infoLabel.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.12)
 infoLabel.Position = UDim2.new(0, 0, 0, ContainerHeight * 0.24)
 infoLabel.BackgroundTransparency = 1
-infoLabel.Text = "Аимбот: красная кнопка\nTP Slash: нажми Q (орбита + возврат)\nTP Hit: нажми ЛКМ (рывок 0.2 сек и обратно)"
+infoLabel.Text = "Аимбот: красная кнопка\nTP Slash: нажми Q\nTP Hit: нажми ЛКМ (рывок 0.2 сек)"
 infoLabel.TextColor3 = colors.text2
 infoLabel.Font = Enum.Font.Gotham
 infoLabel.TextSize = ContainerHeight * 0.025
@@ -798,7 +989,7 @@ Mouse.Button1Down:Connect(function()
     end
 end)
 
--- ========== TP SLASH (С ВОЗВРАТОМ) ==========
+-- ========== TP SLASH ==========
 local function getFirstKiller()
     local playersFolder = workspace:FindFirstChild("Players")
     if not playersFolder then return nil end
@@ -875,7 +1066,7 @@ local function orbitKiller()
         task.wait(0.02)
     end
     
-    -- ВОЗВРАЩАЕМСЯ НА ИСХОДНУЮ ПОЗИЦИЮ
+    -- Возвращаемся на исходную позицию
     if rootPart and rootPart.Parent then
         rootPart.CFrame = originalCFrame
         
@@ -1113,9 +1304,14 @@ local function updateESP()
     highlightGenerators()
 end
 
+-- Оптимизированный цикл ESP
 spawn(function()
     while true do
-        pcall(updateESP)
+        local currentTime = tick()
+        if currentTime - LastESPUpdate >= ESPUpdateInterval then
+            pcall(updateESP)
+            LastESPUpdate = currentTime
+        end
         wait(0.5)
     end
 end)
@@ -1354,6 +1550,22 @@ LocalPlayer.CharacterAdded:Connect(function()
     TPWalkEnabled = false
     if tpCheck then tpCheck.Visible = false end
     
+    -- Останавливаем режим бога при смерти
+    if GodModeLoop then
+        GodModeLoop:Disconnect()
+        GodModeLoop = nil
+    end
+    GodModeEnabled = false
+    if godCheck then godCheck.Visible = false end
+    
+    -- Останавливаем бесконечный телепорт при смерти
+    if InfiniteUpLoop then
+        InfiniteUpLoop:Disconnect()
+        InfiniteUpLoop = nil
+    end
+    InfiniteUpTeleportEnabled = false
+    if infiniteCheck then infiniteCheck.Visible = false end
+    
     AimbotTarget = nil
     AimbotActive = false
     if AimbotEnabled then
@@ -1373,18 +1585,21 @@ end)
 print([[
 
     ╔══════════════════════════════════════╗
-    ║      XONE MOBILE v24.0              ║
+    ║      XONE MOBILE v29.0              ║
     ║                                      ║
-    ║  ИЗМЕНЕНИЯ:                          ║
-    ║  🔄 TP Slash: теперь ВОЗВРАЩАЕТ      ║
-    ║     на исходную позицию после орбиты ║
+    ║  НОВЫЙ РЕЖИМ БОГА:                   ║
+    ║  👑 РЕЖИМ БОГА (В ЦИКЛЕ)             ║
+    ║     - MaxHealth = math.huge          ║
+    ║     - Health = math.huge             ║
+    ║     - Постоянный цикл поддержки      ║
+    ║     - Работает при возрождении       ║
     ║                                      ║
     ║  ФУНКЦИИ:                            ║
-    ║  ⚔️ TP Slash (Q) - орбита + возврат  ║
-    ║  🏃 TP Hit (ЛКМ) - рывок к игроку    ║
-    ║  🖱️ Ctrl+Click TP                     ║
-    ║  🎯 Аимбот                            ║
-    ║  🔴 ESP подсветка                     ║
+    ║  🏃 Полет | 🧱 Ноклип                ║
+    ║  🚶 ТП Ходьба | 🖱️ Ctrl+Click TP     ║
+    ║  ⚔️ TP Slash (Q) | 🏃 TP Hit (ЛКМ)   ║
+    ║  🎯 Аимбот | 🔴 ESP                  ║
+    ║  ∞ Бесконечный телепорт наверх       ║
     ║                                      ║
     ║  [КНОПКА X] - Открыть меню           ║
     ╚══════════════════════════════════════╝
