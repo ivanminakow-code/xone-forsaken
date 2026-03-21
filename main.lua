@@ -1,10 +1,4 @@
---[[
-    FORSAKEN MOBILE MENU v29.0
-    ИЗМЕНЕНИЯ:
-    - Убран телепорт в центр (500)
-    - Добавлен РЕЖИМ БОГА (цикл: math.huge здоровье)
-    - ∞ Бесконечный телепорт наверх (10000) остался
-]]
+
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -12,1360 +6,813 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
 local TweenService = game:GetService("TweenService")
-local TouchEnabled = UserInputService.TouchEnabled
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VirtualUser = game:GetService("VirtualUser")
 
 repeat wait() until Players.LocalPlayer
 local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
 
--- АНТИ-АФК
-LocalPlayer.Idled:Connect(function()
-    VirtualUser:CaptureController()
-    VirtualUser:ClickButton2(Vector2.new())
+pcall(function()
+    LocalPlayer.Idled:Connect(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end)
 end)
 
--- ПЕРЕМЕННЫЕ
+-- ========== ПРОВЕРКА ИГРЫ ==========
+local SUPPORTED_GAME_IDS = {[18687417158]=true, [88713106702323]=true}
+local currentGameId = game.PlaceId
+if not SUPPORTED_GAME_IDS[currentGameId] then
+    warn("❌ Игра не поддерживается. ID: " .. currentGameId)
+    return
+end
+
+-- ========== БЫСТРЫЕ ФУНКЦИИ ==========
+local function fireRemote(ability)
+    pcall(function()
+        local remote = ReplicatedStorage:FindFirstChild("Modules")
+        if remote then remote = remote:FindFirstChild("Network") end
+        if remote then remote = remote:FindFirstChild("RemoteEvent") end
+        if remote then remote:FireServer("UseActorAbility", ability) end
+    end)
+end
+
+-- ========== ИЗВЛЕЧЕННЫЕ ФУНКЦИИ ==========
+local StaminaEnabled = false
+local StaminaLoop = nil
+local function toggleStamina(state)
+    pcall(function()
+        local SM = require(game.ReplicatedStorage.Systems.Character.Game.Sprinting)
+        if state then
+            SM.StaminaLossDisabled = true
+            StaminaLoop = task.spawn(function()
+                while StaminaEnabled do
+                    task.wait(0.1)
+                    SM.Stamina = SM.MaxStamina
+                    SM.StaminaChanged:Fire()
+                end
+            end)
+        else
+            SM.StaminaLossDisabled = false
+            if StaminaLoop then task.cancel(StaminaLoop); StaminaLoop = nil end
+        end
+    end)
+end
+
+local Speed05Enabled = false
+local Speed05Conn = nil
+local function speed05()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local hum = char:WaitForChild("Humanoid")
+    local hrp = char:WaitForChild("HumanoidRootPart")
+    Speed05Conn = RunService.Stepped:Connect(function()
+        if Speed05Enabled and char and hum and hrp then
+            local dir = hum.MoveDirection
+            if dir.Magnitude > 0 then hrp.CFrame = hrp.CFrame + (dir * 0.5) end
+        end
+    end)
+end
+
+local Speed1Enabled = false
+local Speed1Conn = nil
+local function speed1()
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local hum = char:WaitForChild("Humanoid")
+    local hrp = char:WaitForChild("HumanoidRootPart")
+    Speed1Conn = RunService.Stepped:Connect(function()
+        if Speed1Enabled and char and hum and hrp then
+            local dir = hum.MoveDirection
+            if dir.Magnitude > 0 then hrp.CFrame = hrp.CFrame + (dir * 1) end
+        end
+    end)
+end
+
+local TPShedEnabled = false
+local TPShedCooldown = false
+local function shedSlash()
+    if TPShedCooldown then return end
+    local players = workspace:FindFirstChild("Players")
+    if not players then return end
+    local killers = players:FindFirstChild("Killers")
+    if not killers then return end
+    local killer = nil
+    for _, k in ipairs(killers:GetChildren()) do
+        if k:IsA("Model") and k:FindFirstChild("HumanoidRootPart") then
+            killer = k
+            break
+        end
+    end
+    if not killer then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    local kroot = killer:FindFirstChild("HumanoidRootPart")
+    if not root or not kroot then return end
+    TPShedCooldown = true
+    local orig = root.CFrame
+    local start = tick()
+    while tick() - start < 2 do
+        local elapsed = tick() - start
+        local angle = elapsed * math.pi * 4
+        local pred = kroot.Position + (kroot.Velocity * 0.3)
+        local offset = Vector3.new(math.cos(angle)*3, 0, math.sin(angle)*3)
+        root.CFrame = CFrame.new(pred + offset, pred)
+        task.wait(0.03)
+    end
+    if root and root.Parent then root.CFrame = orig end
+    task.delay(40, function() TPShedCooldown = false end)
+end
+
+-- ========== ОСНОВНЫЕ ПЕРЕМЕННЫЕ ==========
 local MenuVisible = false
 local FlyEnabled = false
 local NoclipEnabled = false
-local TPWalkEnabled = false
 local ESPEnabled = false
 local AimbotEnabled = false
 local AimbotActive = false
-local TPSlashEnabled = false
 local TPHitEnabled = false
 local CtrlClickTPEnabled = false
-local GodModeEnabled = false -- НОВЫЙ РЕЖИМ БОГА
-local InfiniteUpTeleportEnabled = false
-local TPSlashCooldown = false
+local GodModeEnabled = false
+local InfiniteUpEnabled = false
+local AutoBlockEnabled = false
+local AutoPunchEnabled = false
 local TPHitCooldown = false
-local TPWalkSpeed = 0.02
 local BodyFly = nil
-local NoclipConnection = nil
-local TPWalkConnection = nil
-local GodModeLoop = nil -- Цикл для режима бога
+local NoclipConn = nil
+local GodModeLoop = nil
 local InfiniteUpLoop = nil
 local CurrentTab = "ИГРОК"
 local AimbotTarget = nil
 local ESPHighlights = {}
-local LastESPUpdate = 0
-local ESPUpdateInterval = 1
+local lastBlock = 0
+local lastPunch = 0
 
--- ПАРАМЕТРЫ TP SLASH
-local ORBIT_RADIUS = 5
-local ORBIT_SPEED = 8
-local ORBIT_DURATION = 2.5
-local ORBIT_COOLDOWN = 20
-local ORBIT_HEIGHT = 2
-
--- ПАРАМЕТРЫ TP HIT
-local TP_HIT_DURATION = 0.2
-local TP_HIT_COOLDOWN = 3
-
--- ПАРАМЕТРЫ БЕСКОНЕЧНОГО ТЕЛЕПОРТА
-local INFINITE_UP_HEIGHT = 10000
-local INFINITE_UP_INTERVAL = 0.1
-
--- РАЗМЕРЫ GUI
-local ViewportSize = Camera.ViewportSize
-local ScreenWidth = ViewportSize.X
-local ScreenHeight = ViewportSize.Y
-
-local MenuWidth = math.min(500, ScreenWidth * 0.9)
-local MenuHeight = math.min(500, ScreenHeight * 0.85)
-local ButtonSize = math.min(60, ScreenWidth * 0.1)
-local AimbotButtonSize = math.min(70, ScreenWidth * 0.1)
-
--- ЦВЕТОВАЯ СХЕМА
-local colors = {
-    bg = Color3.fromRGB(18, 18, 22),
-    bg2 = Color3.fromRGB(25, 25, 32),
-    accent = Color3.fromRGB(0, 162, 255),
-    text = Color3.fromRGB(220, 220, 220),
-    text2 = Color3.fromRGB(150, 150, 150),
-    red = Color3.fromRGB(240, 80, 80),
-    green = Color3.fromRGB(80, 200, 120),
-    white = Color3.fromRGB(255, 255, 255),
-    border = Color3.fromRGB(45, 45, 55),
-    purple = Color3.fromRGB(160, 100, 255),
-    orange = Color3.fromRGB(255, 140, 0),
-    god = Color3.fromRGB(255, 215, 0), -- Золотой для режима бога
-    infinite = Color3.fromRGB(255, 105, 180) -- Розовый для бесконечного телепорта
-}
-
--- ========== СОЗДАНИЕ GUI ==========
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "XONEMobile"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-ScreenGui.DisplayOrder = 999
-
-if TouchEnabled then
-    ScreenGui.IgnoreGuiInset = true
+-- ========== ФУНКЦИИ ==========
+local function tryBlock()
+    if not AutoBlockEnabled then return end
+    local now = tick()
+    if now - lastBlock < 0.5 then return end
+    fireRemote("Block")
+    lastBlock = now
+end
+local function tryPunch()
+    if not AutoPunchEnabled then return end
+    local now = tick()
+    if now - lastPunch < 0.5 then return end
+    fireRemote("Punch")
+    lastPunch = now
 end
 
-local parentSuccess = false
-local possibleParents = {
-    game:GetService("CoreGui"),
-    LocalPlayer:FindFirstChild("PlayerGui"),
-    LocalPlayer.PlayerGui
-}
+local function getRandomPlayer()
+    local list = {}
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            local hum = p.Character:FindFirstChild("Humanoid")
+            if hum and hum.Health > 0 then table.insert(list, p) end
+        end
+    end
+    if #list > 0 then return list[math.random(1, #list)] end
+    return nil
+end
 
-for _, parent in pairs(possibleParents) do
-    if parent then
-        local success = pcall(function()
-            ScreenGui.Parent = parent
-        end)
-        if success then
-            parentSuccess = true
-            break
+local function tpHit()
+    if TPHitCooldown or not TPHitEnabled then return end
+    local target = getRandomPlayer()
+    if not target then return end
+    local char = LocalPlayer.Character
+    if not char then return end
+    local root = char:FindFirstChild("HumanoidRootPart")
+    local troot = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
+    if not root or not troot then return end
+    TPHitCooldown = true
+    local orig = root.CFrame
+    root.CFrame = troot.CFrame + Vector3.new(2,1,2)
+    for _, part in pairs(char:GetChildren()) do
+        if part:IsA("BasePart") and part ~= root then part.CFrame = root.CFrame end
+    end
+    task.wait(0.2)
+    if root and root.Parent then
+        root.CFrame = orig
+        for _, part in pairs(char:GetChildren()) do
+            if part:IsA("BasePart") and part ~= root then part.CFrame = root.CFrame end
+        end
+    end
+    task.delay(3, function() TPHitCooldown = false end)
+end
+
+local function UpdateFly()
+    if not FlyEnabled then return end
+    local char = LocalPlayer.Character
+    if not char or not char:FindFirstChild("HumanoidRootPart") then
+        if BodyFly then BodyFly:Destroy(); BodyFly = nil end
+        return
+    end
+    local root = char.HumanoidRootPart
+    local hum = char:FindFirstChild("Humanoid")
+    if hum then hum.PlatformStand = true end
+    local vec = Vector3.new(0,0,0)
+    if UserInputService:IsKeyDown(Enum.KeyCode.W) then vec = vec + Camera.CFrame.LookVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S) then vec = vec - Camera.CFrame.LookVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then vec = vec - Camera.CFrame.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) then vec = vec + Camera.CFrame.RightVector end
+    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then vec = vec + Vector3.new(0,1,0) end
+    if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then vec = vec + Vector3.new(0,-1,0) end
+    if vec.Magnitude > 0 then vec = vec.Unit * 75 end
+    if BodyFly then BodyFly.Velocity = vec end
+end
+
+-- ========== ESP (ОБЪЕДИНЕННЫЙ) ==========
+local function createHighlight(model, oc, fc)
+    for _, ex in pairs(model:GetChildren()) do if ex:IsA("Highlight") then ex:Destroy() end end
+    local h = Instance.new("Highlight")
+    h.Parent = model
+    h.Adornee = model
+    h.FillTransparency = 0.65
+    h.FillColor = fc
+    h.OutlineColor = oc
+    h.OutlineTransparency = 0
+    table.insert(ESPHighlights, h)
+    return h
+end
+
+local function updateESP()
+    if not ESPEnabled then
+        for _, h in pairs(ESPHighlights) do pcall(function() h:Destroy() end) end
+        ESPHighlights = {}
+        return
+    end
+    for _, h in pairs(ESPHighlights) do pcall(function() h:Destroy() end) end
+    ESPHighlights = {}
+    
+    local pg = workspace:FindFirstChild("Players")
+    if pg then
+        local kg = pg:FindFirstChild("Killers")
+        if kg then
+            for _, obj in pairs(kg:GetChildren()) do
+                local hum = obj:FindFirstChildOfClass("Humanoid")
+                if hum and obj:FindFirstChild("HumanoidRootPart") and hum.Health > 0 then
+                    createHighlight(obj, Color3.new(1,0,0), Color3.new(1,0.5,0.5))
+                end
+            end
+        end
+        local sg = pg:FindFirstChild("Survivors")
+        if sg then
+            for _, obj in pairs(sg:GetChildren()) do
+                local hum = obj:FindFirstChildOfClass("Humanoid")
+                if hum and obj:FindFirstChild("HumanoidRootPart") and hum.Health > 0 then
+                    createHighlight(obj, Color3.new(0,1,0), Color3.new(0.5,1,0.5))
+                end
+            end
+        end
+    end
+    
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local char = p.Character
+            local hum = char:FindFirstChild("Humanoid")
+            if hum and hum.Health > 0 then
+                local isGroup = false
+                local pg = workspace:FindFirstChild("Players")
+                if pg then
+                    local kg = pg:FindFirstChild("Killers")
+                    if kg then for _, obj in pairs(kg:GetChildren()) do if obj == char then isGroup = true break end end end
+                    if not isGroup then
+                        local sg = pg:FindFirstChild("Survivors")
+                        if sg then for _, obj in pairs(sg:GetChildren()) do if obj == char then isGroup = true break end end end
+                    end
+                end
+                if not isGroup then
+                    createHighlight(char, Color3.new(1,1,1), Color3.new(0.8,0.8,0.8))
+                end
+            end
+        end
+    end
+    
+    local map = workspace:FindFirstChild("Map")
+    if map then
+        local ingame = map:FindFirstChild("Ingame")
+        if ingame then
+            local m = ingame:FindFirstChild("Map")
+            if m then
+                for _, obj in pairs(m:GetChildren()) do
+                    if obj:IsA("Model") and obj.Name == "Generator" then
+                        createHighlight(obj, Color3.new(1,1,0), Color3.new(1,1,0.5))
+                    end
+                end
+            end
         end
     end
 end
 
-if not parentSuccess then
-    local folder = Instance.new("Folder")
-    folder.Name = "MenuFolder"
-    folder.Parent = LocalPlayer
-    ScreenGui.Parent = folder
+-- ========== AIMBOT ==========
+function GetNearestPlayer()
+    local nearest = nil
+    local best = math.huge
+    local char = LocalPlayer.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return nil end
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local tr = p.Character:FindFirstChild("HumanoidRootPart")
+            local hum = p.Character:FindFirstChild("Humanoid")
+            if tr and hum and hum.Health > 0 then
+                local dist = (root.Position - tr.Position).Magnitude
+                if dist < best then
+                    local onScr = Camera:WorldToViewportPoint(tr.Position)
+                    if onScr and dist < 150 then
+                        local ray = Ray.new(Camera.CFrame.Position, (tr.Position - Camera.CFrame.Position).Unit * dist)
+                        local hit = workspace:FindPartOnRayWithIgnoreList(ray, {char, Camera})
+                        if hit == nil or hit:IsDescendantOf(p.Character) then
+                            best = dist
+                            nearest = p
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nearest
 end
 
--- ========== КНОПКА ОТКРЫТИЯ ==========
-local OpenButton = Instance.new("TextButton")
-OpenButton.Size = UDim2.new(0, ButtonSize, 0, ButtonSize)
-OpenButton.Position = UDim2.new(0, 20, 0.5, -ButtonSize/2)
-OpenButton.BackgroundColor3 = colors.accent
-OpenButton.BackgroundTransparency = 0.2
-OpenButton.Text = "X"
-OpenButton.TextColor3 = Color3.new(1, 1, 1)
-OpenButton.Font = Enum.Font.GothamBold
-OpenButton.TextSize = ButtonSize * 0.5
-OpenButton.Active = true
-OpenButton.Draggable = true
-OpenButton.Parent = ScreenGui
+-- ========== GUI ==========
+local scrW, scrH = Camera.ViewportSize.X, Camera.ViewportSize.Y
+local MenuW = math.min(500, scrW * 0.9)
+local MenuH = math.min(600, scrH * 0.9)
+local BtnSize = math.min(60, scrW * 0.1)
+local AimSize = math.min(70, scrW * 0.1)
 
+local colors = {bg=Color3.fromRGB(18,18,22), bg2=Color3.fromRGB(25,25,32), accent=Color3.fromRGB(0,162,255), text=Color3.fromRGB(220,220,220), text2=Color3.fromRGB(150,150,150), border=Color3.fromRGB(45,45,55)}
+
+local SG = Instance.new("ScreenGui")
+SG.Name = "XONEMobile"
+SG.ResetOnSpawn = false
+SG.DisplayOrder = 999
+pcall(function() SG.Parent = game:GetService("CoreGui") end)
+if not SG.Parent then pcall(function() SG.Parent = LocalPlayer:FindFirstChild("PlayerGui") end) end
+if not SG.Parent then SG.Parent = Instance.new("Folder", LocalPlayer) end
+
+local OpenBtn = Instance.new("TextButton")
+OpenBtn.Size = UDim2.new(0, BtnSize, 0, BtnSize)
+OpenBtn.Position = UDim2.new(0, 20, 0.5, -BtnSize/2)
+OpenBtn.BackgroundColor3 = colors.accent
+OpenBtn.BackgroundTransparency = 0.2
+OpenBtn.Text = "X"
+OpenBtn.TextColor3 = Color3.new(1,1,1)
+OpenBtn.Font = Enum.Font.GothamBold
+OpenBtn.TextSize = BtnSize * 0.5
+OpenBtn.Active = true
+OpenBtn.Draggable = true
+OpenBtn.Parent = SG
 local OpenCorner = Instance.new("UICorner")
-OpenCorner.CornerRadius = UDim.new(0, ButtonSize/2)
-OpenCorner.Parent = OpenButton
+OpenCorner.CornerRadius = UDim.new(0, BtnSize/2)
+OpenCorner.Parent = OpenBtn
 
--- ========== КНОПКА АИМБОТА ==========
-local AimbotButton = Instance.new("TextButton")
-AimbotButton.Size = UDim2.new(0, AimbotButtonSize, 0, AimbotButtonSize)
-AimbotButton.Position = UDim2.new(1, -AimbotButtonSize - 20, 1, -AimbotButtonSize - 20)
-AimbotButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-AimbotButton.Text = "АИМ"
-AimbotButton.TextColor3 = Color3.new(1, 1, 1)
-AimbotButton.Font = Enum.Font.GothamBold
-AimbotButton.TextSize = AimbotButtonSize * 0.25
-AimbotButton.Visible = false
-AimbotButton.Active = true
-AimbotButton.Draggable = true
-AimbotButton.Parent = ScreenGui
+local AimBtn = Instance.new("TextButton")
+AimBtn.Size = UDim2.new(0, AimSize, 0, AimSize)
+AimBtn.Position = UDim2.new(1, -AimSize - 20, 1, -AimSize - 20)
+AimBtn.BackgroundColor3 = Color3.fromRGB(200,50,50)
+AimBtn.Text = "АИМ"
+AimBtn.TextColor3 = Color3.new(1,1,1)
+AimBtn.Font = Enum.Font.GothamBold
+AimBtn.TextSize = AimSize * 0.25
+AimBtn.Visible = false
+AimBtn.Active = true
+AimBtn.Draggable = true
+AimBtn.Parent = SG
+local AimCorner = Instance.new("UICorner")
+AimCorner.CornerRadius = UDim.new(0, AimSize/2)
+AimCorner.Parent = AimBtn
+local AimInd = Instance.new("Frame")
+AimInd.Size = UDim2.new(0, AimSize*0.25, 0, AimSize*0.25)
+AimInd.Position = UDim2.new(0.5, -AimSize*0.125, 0.5, -AimSize*0.125)
+AimInd.BackgroundColor3 = Color3.fromRGB(255,255,255)
+AimInd.BackgroundTransparency = 0.5
+AimInd.Visible = false
+AimInd.Parent = AimBtn
+local IndCorner = Instance.new("UICorner")
+IndCorner.CornerRadius = UDim.new(0, AimSize*0.125)
+IndCorner.Parent = AimInd
 
-local AimbotCorner = Instance.new("UICorner")
-AimbotCorner.CornerRadius = UDim.new(0, AimbotButtonSize/2)
-AimbotCorner.Parent = AimbotButton
+local Main = Instance.new("Frame")
+Main.Size = UDim2.new(0, MenuW, 0, MenuH)
+Main.Position = UDim2.new(0.5, -MenuW/2, 0.5, -MenuH/2)
+Main.BackgroundColor3 = colors.bg
+Main.BorderSizePixel = 1
+Main.BorderColor3 = colors.border
+Main.Active = true
+Main.Draggable = true
+Main.Visible = false
+Main.Parent = SG
+local MainCorner = Instance.new("UICorner")
+MainCorner.CornerRadius = UDim.new(0, 8)
+MainCorner.Parent = Main
 
-local AimbotIndicator = Instance.new("Frame")
-AimbotIndicator.Size = UDim2.new(0, AimbotButtonSize * 0.25, 0, AimbotButtonSize * 0.25)
-AimbotIndicator.Position = UDim2.new(0.5, -AimbotButtonSize * 0.125, 0.5, -AimbotButtonSize * 0.125)
-AimbotIndicator.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-AimbotIndicator.BackgroundTransparency = 0.5
-AimbotIndicator.Visible = false
-AimbotIndicator.Parent = AimbotButton
-
-local IndicatorCorner = Instance.new("UICorner")
-IndicatorCorner.CornerRadius = UDim.new(0, AimbotButtonSize * 0.125)
-IndicatorCorner.Parent = AimbotIndicator
-
--- ========== ОСНОВНОЕ МЕНЮ ==========
-local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, MenuWidth, 0, MenuHeight)
-MainFrame.Position = UDim2.new(0.5, -MenuWidth/2, 0.5, -MenuHeight/2)
-MainFrame.BackgroundColor3 = colors.bg
-MainFrame.BorderSizePixel = 1
-MainFrame.BorderColor3 = colors.border
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Visible = false
-MainFrame.Parent = ScreenGui
-
-local Corner = Instance.new("UICorner")
-Corner.CornerRadius = UDim.new(0, 8)
-Corner.Parent = MainFrame
-
--- Верхняя полоса
-local TitleBar = Instance.new("Frame")
-TitleBar.Size = UDim2.new(1, 0, 0, MenuHeight * 0.08)
-TitleBar.BackgroundColor3 = colors.bg2
-TitleBar.BorderSizePixel = 0
-TitleBar.Parent = MainFrame
-
+local Title = Instance.new("Frame")
+Title.Size = UDim2.new(1,0,0, MenuH*0.06)
+Title.BackgroundColor3 = colors.bg2
+Title.BorderSizePixel = 0
+Title.Parent = Main
 local TitleCorner = Instance.new("UICorner")
 TitleCorner.CornerRadius = UDim.new(0, 8)
-TitleCorner.Parent = TitleBar
-
+TitleCorner.Parent = Title
 local Logo = Instance.new("TextLabel")
-Logo.Size = UDim2.new(0, MenuWidth * 0.14, 1, 0)
-Logo.Position = UDim2.new(0, 8, 0, 0)
+Logo.Size = UDim2.new(0, MenuW*0.14, 1,0)
+Logo.Position = UDim2.new(0,8,0,0)
 Logo.BackgroundTransparency = 1
 Logo.Text = "XONE"
 Logo.TextColor3 = colors.accent
 Logo.Font = Enum.Font.GothamBold
-Logo.TextSize = MenuHeight * 0.04
+Logo.TextSize = MenuH*0.03
 Logo.TextXAlignment = Enum.TextXAlignment.Left
-Logo.Parent = TitleBar
-
+Logo.Parent = Title
 local GameTitle = Instance.new("TextLabel")
-GameTitle.Size = UDim2.new(0, MenuWidth * 0.25, 1, 0)
-GameTitle.Position = UDim2.new(0, MenuWidth * 0.15, 0, 0)
+GameTitle.Size = UDim2.new(0, MenuW*0.25, 1,0)
+GameTitle.Position = UDim2.new(0, MenuW*0.15,0,0)
 GameTitle.BackgroundTransparency = 1
 GameTitle.Text = "| FORSAKEN"
 GameTitle.TextColor3 = colors.text2
 GameTitle.Font = Enum.Font.GothamSemibold
-GameTitle.TextSize = MenuHeight * 0.035
+GameTitle.TextSize = MenuH*0.025
 GameTitle.TextXAlignment = Enum.TextXAlignment.Left
-GameTitle.Parent = TitleBar
-
-local VersionLabel = Instance.new("TextLabel")
-VersionLabel.Size = UDim2.new(0, MenuWidth * 0.15, 1, 0)
-VersionLabel.Position = UDim2.new(0, MenuWidth * 0.4, 0, 0)
-VersionLabel.BackgroundTransparency = 1
-VersionLabel.Text = "v29.0"
-VersionLabel.TextColor3 = colors.text2
-VersionLabel.Font = Enum.Font.Gotham
-VersionLabel.TextSize = MenuHeight * 0.03
-VersionLabel.TextXAlignment = Enum.TextXAlignment.Left
-VersionLabel.Parent = TitleBar
-
-local CloseButton = Instance.new("TextButton")
-CloseButton.Size = UDim2.new(0, MenuHeight * 0.05, 0, MenuHeight * 0.05)
-CloseButton.Position = UDim2.new(1, -MenuHeight * 0.07, 0.5, -MenuHeight * 0.025)
-CloseButton.BackgroundColor3 = Color3.fromRGB(40, 40, 48)
-CloseButton.Text = "✕"
-CloseButton.TextColor3 = colors.text
-CloseButton.Font = Enum.Font.GothamBold
-CloseButton.TextSize = MenuHeight * 0.025
-CloseButton.Parent = TitleBar
-
+GameTitle.Parent = Title
+local Ver = Instance.new("TextLabel")
+Ver.Size = UDim2.new(0, MenuW*0.15, 1,0)
+Ver.Position = UDim2.new(0, MenuW*0.4,0,0)
+Ver.BackgroundTransparency = 1
+Ver.Text = "v47.0"
+Ver.TextColor3 = colors.text2
+Ver.Font = Enum.Font.Gotham
+Ver.TextSize = MenuH*0.02
+Ver.TextXAlignment = Enum.TextXAlignment.Left
+Ver.Parent = Title
+local Close = Instance.new("TextButton")
+Close.Size = UDim2.new(0, MenuH*0.04, 0, MenuH*0.04)
+Close.Position = UDim2.new(1, -MenuH*0.05, 0.5, -MenuH*0.02)
+Close.BackgroundColor3 = Color3.fromRGB(40,40,48)
+Close.Text = "✕"
+Close.TextColor3 = colors.text
+Close.Font = Enum.Font.GothamBold
+Close.TextSize = MenuH*0.018
+Close.Parent = Title
 local CloseCorner = Instance.new("UICorner")
-CloseCorner.CornerRadius = UDim.new(0, MenuHeight * 0.008)
-CloseCorner.Parent = CloseButton
+CloseCorner.CornerRadius = UDim.new(0, MenuH*0.006)
+CloseCorner.Parent = Close
 
--- ========== ВКЛАДКИ ==========
-local TabsFrame = Instance.new("Frame")
-TabsFrame.Size = UDim2.new(1, 0, 0, MenuHeight * 0.07)
-TabsFrame.Position = UDim2.new(0, 0, 0, MenuHeight * 0.08)
-TabsFrame.BackgroundColor3 = colors.bg2
-TabsFrame.BorderSizePixel = 0
-TabsFrame.Parent = MainFrame
-
-local TabWidth = (MenuWidth - 50) / 5
-
+local Tabs = Instance.new("Frame")
+Tabs.Size = UDim2.new(1,0,0, MenuH*0.06)
+Tabs.Position = UDim2.new(0,0,0, MenuH*0.06)
+Tabs.BackgroundColor3 = colors.bg2
+Tabs.BorderSizePixel = 0
+Tabs.Parent = Main
+local TabW = (MenuW - 40) / 4
 local PlayerTab = Instance.new("TextButton")
-PlayerTab.Size = UDim2.new(0, TabWidth, 1, 0)
-PlayerTab.Position = UDim2.new(0, 8, 0, 0)
+PlayerTab.Size = UDim2.new(0, TabW, 1,0)
+PlayerTab.Position = UDim2.new(0,8,0,0)
 PlayerTab.BackgroundTransparency = 1
 PlayerTab.Text = "ИГРОК"
 PlayerTab.TextColor3 = colors.accent
 PlayerTab.Font = Enum.Font.GothamBold
-PlayerTab.TextSize = MenuHeight * 0.02
-PlayerTab.Parent = TabsFrame
-
+PlayerTab.TextSize = MenuH*0.018
+PlayerTab.Parent = Tabs
 local VisualTab = Instance.new("TextButton")
-VisualTab.Size = UDim2.new(0, TabWidth, 1, 0)
-VisualTab.Position = UDim2.new(0, 12 + TabWidth, 0, 0)
+VisualTab.Size = UDim2.new(0, TabW, 1,0)
+VisualTab.Position = UDim2.new(0,12+TabW,0,0)
 VisualTab.BackgroundTransparency = 1
 VisualTab.Text = "ВИЗУАЛ"
 VisualTab.TextColor3 = colors.text2
 VisualTab.Font = Enum.Font.GothamBold
-VisualTab.TextSize = MenuHeight * 0.02
-VisualTab.Parent = TabsFrame
-
+VisualTab.TextSize = MenuH*0.018
+VisualTab.Parent = Tabs
 local TeleportTab = Instance.new("TextButton")
-TeleportTab.Size = UDim2.new(0, TabWidth, 1, 0)
-TeleportTab.Position = UDim2.new(0, 16 + (TabWidth * 2), 0, 0)
+TeleportTab.Size = UDim2.new(0, TabW, 1,0)
+TeleportTab.Position = UDim2.new(0,16+TabW*2,0,0)
 TeleportTab.BackgroundTransparency = 1
 TeleportTab.Text = "ТЕЛЕПОРТ"
 TeleportTab.TextColor3 = colors.text2
 TeleportTab.Font = Enum.Font.GothamBold
-TeleportTab.TextSize = MenuHeight * 0.02
-TeleportTab.Parent = TabsFrame
-
+TeleportTab.TextSize = MenuH*0.018
+TeleportTab.Parent = Tabs
 local CombatTab = Instance.new("TextButton")
-CombatTab.Size = UDim2.new(0, TabWidth, 1, 0)
-CombatTab.Position = UDim2.new(0, 20 + (TabWidth * 3), 0, 0)
+CombatTab.Size = UDim2.new(0, TabW, 1,0)
+CombatTab.Position = UDim2.new(0,20+TabW*3,0,0)
 CombatTab.BackgroundTransparency = 1
 CombatTab.Text = "БОЙ"
 CombatTab.TextColor3 = colors.text2
 CombatTab.Font = Enum.Font.GothamBold
-CombatTab.TextSize = MenuHeight * 0.02
-CombatTab.Parent = TabsFrame
+CombatTab.TextSize = MenuH*0.018
+CombatTab.Parent = Tabs
+local TabInd = Instance.new("Frame")
+TabInd.Size = UDim2.new(0, TabW, 0, 2)
+TabInd.Position = UDim2.new(0,8,1,-2)
+TabInd.BackgroundColor3 = colors.accent
+TabInd.BorderSizePixel = 0
+TabInd.Parent = Tabs
 
-local ItemsTab = Instance.new("TextButton")
-ItemsTab.Size = UDim2.new(0, TabWidth, 1, 0)
-ItemsTab.Position = UDim2.new(0, 24 + (TabWidth * 4), 0, 0)
-ItemsTab.BackgroundTransparency = 1
-ItemsTab.Text = "ПРЕДМЕТЫ"
-ItemsTab.TextColor3 = colors.text2
-ItemsTab.Font = Enum.Font.GothamBold
-ItemsTab.TextSize = MenuHeight * 0.02
-ItemsTab.Parent = TabsFrame
+local ContY = MenuH*0.13
+local ContH = MenuH*0.8
+local PlayerCont = Instance.new("Frame")
+PlayerCont.Size = UDim2.new(1,-20,0,ContH)
+PlayerCont.Position = UDim2.new(0,10,0,ContY)
+PlayerCont.BackgroundTransparency = 1
+PlayerCont.Visible = true
+PlayerCont.Parent = Main
+local VisualCont = Instance.new("Frame")
+VisualCont.Size = UDim2.new(1,-20,0,ContH)
+VisualCont.Position = UDim2.new(0,10,0,ContY)
+VisualCont.BackgroundTransparency = 1
+VisualCont.Visible = false
+VisualCont.Parent = Main
+local TeleportCont = Instance.new("Frame")
+TeleportCont.Size = UDim2.new(1,-20,0,ContH)
+TeleportCont.Position = UDim2.new(0,10,0,ContY)
+TeleportCont.BackgroundTransparency = 1
+TeleportCont.Visible = false
+TeleportCont.Parent = Main
+local CombatCont = Instance.new("Frame")
+CombatCont.Size = UDim2.new(1,-20,0,ContH)
+CombatCont.Position = UDim2.new(0,10,0,ContY)
+CombatCont.BackgroundTransparency = 1
+CombatCont.Visible = false
+CombatCont.Parent = Main
 
-local TabIndicator = Instance.new("Frame")
-TabIndicator.Size = UDim2.new(0, TabWidth, 0, 2)
-TabIndicator.Position = UDim2.new(0, 8, 1, -2)
-TabIndicator.BackgroundColor3 = colors.accent
-TabIndicator.BorderSizePixel = 0
-TabIndicator.Parent = TabsFrame
-
--- ========== КОНТЕЙНЕРЫ ==========
-local ContainerY = MenuHeight * 0.16
-local ContainerHeight = MenuHeight * 0.75
-
-local PlayerContainer = Instance.new("Frame")
-PlayerContainer.Size = UDim2.new(1, -20, 0, ContainerHeight)
-PlayerContainer.Position = UDim2.new(0, 10, 0, ContainerY)
-PlayerContainer.BackgroundTransparency = 1
-PlayerContainer.Visible = true
-PlayerContainer.Parent = MainFrame
-
-local VisualContainer = Instance.new("Frame")
-VisualContainer.Size = UDim2.new(1, -20, 0, ContainerHeight)
-VisualContainer.Position = UDim2.new(0, 10, 0, ContainerY)
-VisualContainer.BackgroundTransparency = 1
-VisualContainer.Visible = false
-VisualContainer.Parent = MainFrame
-
-local TeleportContainer = Instance.new("Frame")
-TeleportContainer.Size = UDim2.new(1, -20, 0, ContainerHeight)
-TeleportContainer.Position = UDim2.new(0, 10, 0, ContainerY)
-TeleportContainer.BackgroundTransparency = 1
-TeleportContainer.Visible = false
-TeleportContainer.Parent = MainFrame
-
-local CombatContainer = Instance.new("Frame")
-CombatContainer.Size = UDim2.new(1, -20, 0, ContainerHeight)
-CombatContainer.Position = UDim2.new(0, 10, 0, ContainerY)
-CombatContainer.BackgroundTransparency = 1
-CombatContainer.Visible = false
-CombatContainer.Parent = MainFrame
-
-local ItemsContainer = Instance.new("Frame")
-ItemsContainer.Size = UDim2.new(1, -20, 0, ContainerHeight)
-ItemsContainer.Position = UDim2.new(0, 10, 0, ContainerY)
-ItemsContainer.BackgroundTransparency = 1
-ItemsContainer.Visible = false
-ItemsContainer.Parent = MainFrame
-
--- Разделители
-local function addSeparator(parent, yPos)
-    local sep = Instance.new("Frame")
-    sep.Size = UDim2.new(1, 0, 0, 1)
-    sep.Position = UDim2.new(0, 0, 0, yPos)
-    sep.BackgroundColor3 = colors.border
-    sep.BorderSizePixel = 0
-    sep.Parent = parent
-end
-
-addSeparator(PlayerContainer, 0)
-addSeparator(VisualContainer, 0)
-addSeparator(TeleportContainer, 0)
-addSeparator(CombatContainer, 0)
-addSeparator(ItemsContainer, 0)
-
--- ========== ФУНКЦИЯ СОЗДАНИЯ ЧЕКБОКСА ==========
-local function CreateXONECheckbox(parent, name, posY, defaultValue, callback)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.06)
-    frame.Position = UDim2.new(0, 0, 0, posY)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-    
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0, 200, 1, 0)
-    label.Position = UDim2.new(0, 25, 0, 0)
-    label.BackgroundTransparency = 1
-    label.Text = name
-    label.TextColor3 = colors.text
-    label.Font = Enum.Font.Gotham
-    label.TextSize = ContainerHeight * 0.03
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = frame
-    
-    local checkbox = Instance.new("Frame")
-    checkbox.Size = UDim2.new(0, ContainerHeight * 0.035, 0, ContainerHeight * 0.035)
-    checkbox.Position = UDim2.new(0, 0, 0.5, -ContainerHeight * 0.0175)
-    checkbox.BackgroundColor3 = colors.bg2
-    checkbox.BorderSizePixel = 1
-    checkbox.BorderColor3 = colors.border
-    checkbox.Parent = frame
-    
-    local checkCorner = Instance.new("UICorner")
-    checkCorner.CornerRadius = UDim.new(0, 3)
-    checkCorner.Parent = checkbox
-    
-    local checkFill = Instance.new("Frame")
-    checkFill.Size = UDim2.new(0, ContainerHeight * 0.022, 0, ContainerHeight * 0.022)
-    checkFill.Position = UDim2.new(0.5, -ContainerHeight * 0.011, 0.5, -ContainerHeight * 0.011)
-    checkFill.BackgroundColor3 = colors.accent
-    checkFill.Visible = defaultValue
-    checkFill.Parent = checkbox
-    
+local function Check(parent, name, y, def, cb)
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1,0,0, ContH*0.05)
+    f.Position = UDim2.new(0,0,0,y)
+    f.BackgroundTransparency = 1
+    f.Parent = parent
+    local l = Instance.new("TextLabel")
+    l.Size = UDim2.new(0,180,1,0)
+    l.Position = UDim2.new(0,25,0,0)
+    l.BackgroundTransparency = 1
+    l.Text = name
+    l.TextColor3 = colors.text
+    l.Font = Enum.Font.Gotham
+    l.TextSize = ContH*0.025
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.Parent = f
+    local box = Instance.new("Frame")
+    box.Size = UDim2.new(0, ContH*0.03, 0, ContH*0.03)
+    box.Position = UDim2.new(0,0,0.5, -ContH*0.015)
+    box.BackgroundColor3 = colors.bg2
+    box.BorderSizePixel = 1
+    box.BorderColor3 = colors.border
+    box.Parent = f
+    local boxCorner = Instance.new("UICorner")
+    boxCorner.CornerRadius = UDim.new(0,3)
+    boxCorner.Parent = box
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.new(0, ContH*0.02, 0, ContH*0.02)
+    fill.Position = UDim2.new(0.5, -ContH*0.01, 0.5, -ContH*0.01)
+    fill.BackgroundColor3 = colors.accent
+    fill.Visible = def
+    fill.Parent = box
     local fillCorner = Instance.new("UICorner")
-    fillCorner.CornerRadius = UDim.new(0, 2)
-    fillCorner.Parent = checkFill
-    
-    local button = Instance.new("TextButton")
-    button.Size = UDim2.new(1, 0, 1, 0)
-    button.BackgroundTransparency = 1
-    button.Text = ""
-    button.Parent = frame
-    
-    local state = defaultValue
-    
-    button.MouseButton1Click:Connect(function()
+    fillCorner.CornerRadius = UDim.new(0,2)
+    fillCorner.Parent = fill
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1,0,1,0)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.Parent = f
+    local state = def
+    btn.MouseButton1Click:Connect(function()
         state = not state
-        checkFill.Visible = state
-        callback(state)
+        fill.Visible = state
+        cb(state)
     end)
-    
-    return frame, checkFill
-end
-
--- ========== ФУНКЦИЯ СОЗДАНИЯ КНОПКИ ДЕЙСТВИЯ ==========
-local function CreateActionButton(parent, name, posY, color, callback)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.07)
-    frame.Position = UDim2.new(0, 0, 0, posY)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-    
-    local button = Instance.new("TextButton")
-    button.Size = UDim2.new(1, -20, 1, -10)
-    button.Position = UDim2.new(0, 10, 0, 5)
-    button.BackgroundColor3 = color or colors.accent
-    button.Text = name
-    button.TextColor3 = colors.text
-    button.Font = Enum.Font.GothamBold
-    button.TextSize = ContainerHeight * 0.035
-    button.Parent = frame
-    
-    local btnCorner = Instance.new("UICorner")
-    btnCorner.CornerRadius = UDim.new(0, 8)
-    btnCorner.Parent = button
-    
-    button.MouseButton1Click:Connect(function()
-        callback()
-    end)
-    
-    button.MouseEnter:Connect(function()
-        button.BackgroundColor3 = Color3.fromRGB(
-            math.min(color.R * 255 + 30, 255),
-            math.min(color.G * 255 + 30, 255),
-            math.min(color.B * 255 + 30, 255)
-        )
-    end)
-    
-    button.MouseLeave:Connect(function()
-        button.BackgroundColor3 = color
-    end)
-    
-    return frame
-end
-
--- ========== ФУНКЦИЯ СОЗДАНИЯ КНОПКИ ТЕЛЕПОРТА ==========
-local function CreateTeleportButton(parent, playerName, posY, callback)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.08)
-    frame.Position = UDim2.new(0, 0, 0, posY)
-    frame.BackgroundColor3 = colors.bg2
-    frame.BorderSizePixel = 1
-    frame.BorderColor3 = colors.border
-    frame.Parent = parent
-    
-    local buttonCorner = Instance.new("UICorner")
-    buttonCorner.CornerRadius = UDim.new(0, 6)
-    buttonCorner.Parent = frame
-    
-    local nameLabel = Instance.new("TextLabel")
-    nameLabel.Size = UDim2.new(1, -80, 1, 0)
-    nameLabel.Position = UDim2.new(0, 10, 0, 0)
-    nameLabel.BackgroundTransparency = 1
-    nameLabel.Text = playerName
-    nameLabel.TextColor3 = colors.text
-    nameLabel.Font = Enum.Font.Gotham
-    nameLabel.TextSize = ContainerHeight * 0.03
-    nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-    nameLabel.Parent = frame
-    
-    local tpButton = Instance.new("TextButton")
-    tpButton.Size = UDim2.new(0, 60, 0, ContainerHeight * 0.045)
-    tpButton.Position = UDim2.new(1, -70, 0.5, -ContainerHeight * 0.0225)
-    tpButton.BackgroundColor3 = colors.accent
-    tpButton.Text = "ТП"
-    tpButton.TextColor3 = colors.text
-    tpButton.Font = Enum.Font.GothamBold
-    tpButton.TextSize = ContainerHeight * 0.025
-    tpButton.Parent = frame
-    
-    local tpCorner = Instance.new("UICorner")
-    tpCorner.CornerRadius = UDim.new(0, 5)
-    tpCorner.Parent = tpButton
-    
-    tpButton.MouseButton1Click:Connect(function()
-        callback()
-    end)
-    
-    tpButton.MouseEnter:Connect(function()
-        tpButton.BackgroundColor3 = Color3.fromRGB(50, 150, 255)
-    end)
-    tpButton.MouseLeave:Connect(function()
-        tpButton.BackgroundColor3 = colors.accent
-    end)
-    
-    return frame
+    return f
 end
 
 -- ========== PLAYER TAB ==========
-local MovementTitle = Instance.new("TextLabel")
-MovementTitle.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-MovementTitle.Position = UDim2.new(0, 0, 0, 5)
-MovementTitle.BackgroundTransparency = 1
-MovementTitle.Text = "ДВИЖЕНИЕ"
-MovementTitle.TextColor3 = colors.accent
-MovementTitle.Font = Enum.Font.GothamBold
-MovementTitle.TextSize = ContainerHeight * 0.03
-MovementTitle.TextXAlignment = Enum.TextXAlignment.Left
-MovementTitle.Parent = PlayerContainer
-
--- FLY
-local flyFrame, flyCheck = CreateXONECheckbox(PlayerContainer, "Полет", ContainerHeight * 0.05, false, function(state)
-    FlyEnabled = state
-    
-    if FlyEnabled then
-        local character = LocalPlayer.Character
-        if character and character:FindFirstChild("HumanoidRootPart") then
-            local root = character.HumanoidRootPart
+local py = 5
+Check(PlayerCont, "Полет", py, false, function(v) 
+    FlyEnabled = v
+    if v then
+        local c = LocalPlayer.Character
+        if c and c:FindFirstChild("HumanoidRootPart") then
             if BodyFly then BodyFly:Destroy() end
             BodyFly = Instance.new("BodyVelocity")
             BodyFly.Velocity = Vector3.new(0,0,0)
             BodyFly.MaxForce = Vector3.new(5000,5000,5000)
             BodyFly.P = 1250
-            BodyFly.Parent = root
-            
-            local humanoid = character:FindFirstChild("Humanoid")
-            if humanoid then humanoid.PlatformStand = true end
+            BodyFly.Parent = c.HumanoidRootPart
+            local h = c:FindFirstChild("Humanoid")
+            if h then h.PlatformStand = true end
         end
     else
-        if BodyFly then
-            BodyFly:Destroy()
-            BodyFly = nil
-        end
-        local character = LocalPlayer.Character
-        if character then
-            local humanoid = character:FindFirstChild("Humanoid")
-            if humanoid then humanoid.PlatformStand = false end
+        if BodyFly then BodyFly:Destroy(); BodyFly = nil end
+        local c = LocalPlayer.Character
+        if c then
+            local h = c:FindFirstChild("Humanoid")
+            if h then h.PlatformStand = false end
         end
     end
 end)
-
--- NOCLIP
-local noclipFrame, noclipCheck = CreateXONECheckbox(PlayerContainer, "Сквозь стены", ContainerHeight * 0.11, false, function(state)
-    NoclipEnabled = state
-    
-    if NoclipConnection then
-        NoclipConnection:Disconnect()
-        NoclipConnection = nil
-    end
-    
-    if NoclipEnabled then
-        NoclipConnection = RunService.Stepped:Connect(function()
-            local character = LocalPlayer.Character
-            if character then
-                for _, part in pairs(character:GetDescendants()) do
-                    if part:IsA("BasePart") then
-                        part.CanCollide = false
-                    end
+py = py + ContH*0.05
+Check(PlayerCont, "Сквозь стены", py, false, function(v)
+    NoclipEnabled = v
+    if NoclipConn then NoclipConn:Disconnect(); NoclipConn = nil end
+    if v then
+        NoclipConn = RunService.Stepped:Connect(function()
+            local c = LocalPlayer.Character
+            if c then
+                for _, p in pairs(c:GetDescendants()) do
+                    if p:IsA("BasePart") then p.CanCollide = false end
                 end
             end
         end)
     else
-        local character = LocalPlayer.Character
-        if character then
-            for _, part in pairs(character:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    part.CanCollide = true
-                end
+        local c = LocalPlayer.Character
+        if c then
+            for _, p in pairs(c:GetDescendants()) do
+                if p:IsA("BasePart") then p.CanCollide = true end
             end
         end
     end
 end)
-
--- TP WALK
-local tpFrame, tpCheck = CreateXONECheckbox(PlayerContainer, "ТП Ходьба (0.02)", ContainerHeight * 0.17, false, function(state)
-    TPWalkEnabled = state
-    
-    if TPWalkConnection then
-        TPWalkConnection:Disconnect()
-        TPWalkConnection = nil
-    end
-    
-    if TPWalkEnabled then
-        TPWalkConnection = RunService.Heartbeat:Connect(function()
-            local character = LocalPlayer.Character
-            if not character then return end
-            
-            local humanoid = character:FindFirstChild("Humanoid")
-            local rootPart = character:FindFirstChild("HumanoidRootPart")
-            
-            if humanoid and rootPart and humanoid.MoveDirection.Magnitude > 0 then
-                local moveDir = humanoid.MoveDirection
-                local tpDistance = 0.02
-                
-                rootPart.CFrame = rootPart.CFrame + (moveDir * tpDistance)
-                
-                for _, part in pairs(character:GetChildren()) do
-                    if part:IsA("BasePart") and part ~= rootPart then
-                        part.CFrame = part.CFrame + (moveDir * tpDistance)
-                    end
+py = py + ContH*0.05
+Check(PlayerCont, "⚡ Бесконечная выносливость", py, false, function(v) StaminaEnabled = v; toggleStamina(v) end)
+py = py + ContH*0.05
+Check(PlayerCont, "⚡ Скорость 0.5", py, false, function(v)
+    if Speed05Enabled then if Speed05Conn then Speed05Conn:Disconnect() end end
+    Speed05Enabled = v
+    if v then speed05() end
+end)
+py = py + ContH*0.05
+Check(PlayerCont, "⚡ Скорость 1", py, false, function(v)
+    if Speed1Enabled then if Speed1Conn then Speed1Conn:Disconnect() end end
+    Speed1Enabled = v
+    if v then speed1() end
+end)
+py = py + ContH*0.05
+Check(PlayerCont, "👑 РЕЖИМ БОГА", py, false, function(v)
+    GodModeEnabled = v
+    if GodModeLoop then GodModeLoop:Disconnect(); GodModeLoop = nil end
+    if v then
+        GodModeLoop = RunService.Heartbeat:Connect(function()
+            local c = LocalPlayer.Character
+            if c then
+                local h = c:FindFirstChild("Humanoid")
+                if h and h.Health > 0 then
+                    h.MaxHealth = math.huge
+                    h.Health = math.huge
                 end
             end
         end)
     end
 end)
-
--- ========== ЗДОРОВЬЕ (РЕЖИМ БОГА В ЦИКЛЕ) ==========
-local HealthTitle = Instance.new("TextLabel")
-HealthTitle.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-HealthTitle.Position = UDim2.new(0, 0, 0, ContainerHeight * 0.23)
-HealthTitle.BackgroundTransparency = 1
-HealthTitle.Text = "ЗДОРОВЬЕ"
-HealthTitle.TextColor3 = colors.accent
-HealthTitle.Font = Enum.Font.GothamBold
-HealthTitle.TextSize = ContainerHeight * 0.03
-HealthTitle.TextXAlignment = Enum.TextXAlignment.Left
-HealthTitle.Parent = PlayerContainer
-
--- Функция для режима бога в цикле
-local function startGodMode()
-    if GodModeLoop then
-        GodModeLoop:Disconnect()
-        GodModeLoop = nil
-    end
-    
-    if not GodModeEnabled then return end
-    
-    -- Сначала устанавливаем параметры
-    local character = LocalPlayer.Character
-    if character then
-        local humanoid = character:FindFirstChild("Humanoid")
-        if humanoid then
-            humanoid.MaxHealth = math.huge
-            humanoid.Health = math.huge
-        end
-    end
-    
-    -- Запускаем цикл для постоянной поддержки
-    GodModeLoop = RunService.Heartbeat:Connect(function()
-        local character = LocalPlayer.Character
-        if not character then return end
-        
-        local humanoid = character:FindFirstChild("Humanoid")
-        if not humanoid then return end
-        
-        -- Постоянно устанавливаем MaxHealth и Health в math.huge
-        humanoid.MaxHealth = math.huge
-        humanoid.Health = math.huge
-    end)
-    
-    -- Также отслеживаем появление нового персонажа
-    LocalPlayer.CharacterAdded:Connect(function(newChar)
-        task.wait(0.5)
-        if GodModeEnabled then
-            local humanoid = newChar:FindFirstChild("Humanoid")
-            if humanoid then
-                humanoid.MaxHealth = math.huge
-                humanoid.Health = math.huge
+py = py + ContH*0.05
+Check(PlayerCont, "∞ Телепорт вверх (10000)", py, false, function(v)
+    InfiniteUpEnabled = v
+    if InfiniteUpLoop then InfiniteUpLoop:Disconnect(); InfiniteUpLoop = nil end
+    if v then
+        InfiniteUpLoop = RunService.Heartbeat:Connect(function()
+            local c = LocalPlayer.Character
+            if c then
+                local r = c:FindFirstChild("HumanoidRootPart")
+                if r then r.CFrame = CFrame.new(r.Position.X, r.Position.Y + 10000, r.Position.Z) end
             end
-        end
-    end)
-end
-
--- Чекбокс для режима бога (в цикле)
-local godFrame, godCheck = CreateXONECheckbox(PlayerContainer, "👑 РЕЖИМ БОГА (то робит то нет)", ContainerHeight * 0.28, false, function(state)
-    GodModeEnabled = state
-    startGodMode()
-end)
-
-local godInfo = Instance.new("TextLabel")
-godInfo.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-godInfo.Position = UDim2.new(0, 25, 0, ContainerHeight * 0.34)
-godInfo.BackgroundTransparency = 1
-godInfo.Text = "Бесконечное здоровье (постоянный цикл)"
-godInfo.TextColor3 = colors.text2
-godInfo.Font = Enum.Font.Gotham
-godInfo.TextSize = ContainerHeight * 0.025
-godInfo.TextXAlignment = Enum.TextXAlignment.Left
-godInfo.Parent = PlayerContainer
-
--- ========== БЕСКОНЕЧНЫЙ ТЕЛЕПОРТ НАВЕРХ ==========
-local InfiniteTitle = Instance.new("TextLabel")
-InfiniteTitle.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-InfiniteTitle.Position = UDim2.new(0, 0, 0, ContainerHeight * 0.39)
-InfiniteTitle.BackgroundTransparency = 1
-InfiniteTitle.Text = "БЕСКОНЕЧНЫЙ ТЕЛЕПОРТ"
-InfiniteTitle.TextColor3 = colors.accent
-InfiniteTitle.Font = Enum.Font.GothamBold
-InfiniteTitle.TextSize = ContainerHeight * 0.03
-InfiniteTitle.TextXAlignment = Enum.TextXAlignment.Left
-InfiniteTitle.Parent = PlayerContainer
-
--- Функция для бесконечного телепорта наверх
-local function startInfiniteUpTeleport()
-    if InfiniteUpLoop then
-        InfiniteUpLoop:Disconnect()
-        InfiniteUpLoop = nil
+            task.wait(0.1)
+        end)
     end
-    
-    if not InfiniteUpTeleportEnabled then return end
-    
-    InfiniteUpLoop = RunService.Heartbeat:Connect(function()
-        local character = LocalPlayer.Character
-        if not character then return end
-        
-        local rootPart = character:FindFirstChild("HumanoidRootPart")
-        if not rootPart then return end
-        
-        -- Получаем текущую позицию
-        local currentPos = rootPart.Position
-        
-        -- Телепортируем на 10000 студий вверх (сохраняя X и Z)
-        local newPosition = Vector3.new(currentPos.X, currentPos.Y + INFINITE_UP_HEIGHT, currentPos.Z)
-        
-        -- Применяем телепорт
-        rootPart.CFrame = CFrame.new(newPosition)
-        
-        -- Синхронизируем остальные части
-        for _, part in pairs(character:GetChildren()) do
-            if part:IsA("BasePart") and part ~= rootPart then
-                part.CFrame = rootPart.CFrame
-            end
-        end
-        
-        -- Небольшая задержка для плавности
-        task.wait(INFINITE_UP_INTERVAL)
-    end)
-end
-
--- Чекбокс для бесконечного телепорта наверх
-local infiniteFrame, infiniteCheck = CreateXONECheckbox(PlayerContainer, "∞ Бесконечный телепорт вверх (10000)", ContainerHeight * 0.44, false, function(state)
-    InfiniteUpTeleportEnabled = state
-    startInfiniteUpTeleport()
 end)
-
-local infiniteInfo = Instance.new("TextLabel")
-infiniteInfo.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-infiniteInfo.Position = UDim2.new(0, 25, 0, ContainerHeight * 0.50)
-infiniteInfo.BackgroundTransparency = 1
-infiniteInfo.Text = "Телепортирует на 10000 ст. вверх каждые 0.1 сек"
-infiniteInfo.TextColor3 = colors.text2
-infiniteInfo.Font = Enum.Font.Gotham
-infiniteInfo.TextSize = ContainerHeight * 0.025
-infiniteInfo.TextXAlignment = Enum.TextXAlignment.Left
-infiniteInfo.Parent = PlayerContainer
-
--- ========== CTRL+CLICK TP ==========
-local CtrlTitle = Instance.new("TextLabel")
-CtrlTitle.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-CtrlTitle.Position = UDim2.new(0, 0, 0, ContainerHeight * 0.55)
-CtrlTitle.BackgroundTransparency = 1
-CtrlTitle.Text = "ТЕЛЕПОРТ"
-CtrlTitle.TextColor3 = colors.accent
-CtrlTitle.Font = Enum.Font.GothamBold
-CtrlTitle.TextSize = ContainerHeight * 0.03
-CtrlTitle.TextXAlignment = Enum.TextXAlignment.Left
-CtrlTitle.Parent = PlayerContainer
-
-local ctrlClickFrame, ctrlClickCheck = CreateXONECheckbox(PlayerContainer, "Ctrl+Click TP", ContainerHeight * 0.60, false, function(state)
-    CtrlClickTPEnabled = state
-end)
-
-local ctrlInfo = Instance.new("TextLabel")
-ctrlInfo.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-ctrlInfo.Position = UDim2.new(0, 25, 0, ContainerHeight * 0.66)
-ctrlInfo.BackgroundTransparency = 1
-ctrlInfo.Text = "Зажми Ctrl + ЛКМ для телепорта"
-ctrlInfo.TextColor3 = colors.text2
-ctrlInfo.Font = Enum.Font.Gotham
-ctrlInfo.TextSize = ContainerHeight * 0.025
-ctrlInfo.TextXAlignment = Enum.TextXAlignment.Left
-ctrlInfo.Parent = PlayerContainer
+py = py + ContH*0.05
+Check(PlayerCont, "Ctrl+Click TP", py, false, function(v) CtrlClickTPEnabled = v end)
 
 -- ========== VISUAL TAB ==========
-local RenderTitle = Instance.new("TextLabel")
-RenderTitle.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-RenderTitle.Position = UDim2.new(0, 0, 0, 5)
-RenderTitle.BackgroundTransparency = 1
-RenderTitle.Text = "ОТОБРАЖЕНИЕ"
-RenderTitle.TextColor3 = colors.accent
-RenderTitle.Font = Enum.Font.GothamBold
-RenderTitle.TextSize = ContainerHeight * 0.03
-RenderTitle.TextXAlignment = Enum.TextXAlignment.Left
-RenderTitle.Parent = VisualContainer
-
-local espFrame, espCheck = CreateXONECheckbox(VisualContainer, "ESP (Подсветка)", ContainerHeight * 0.05, false, function(state)
-    ESPEnabled = state
-    if not state then
-        clearAllHighlights()
-    end
-end)
-
--- ========== COMBAT TAB ==========
-local CombatTitle = Instance.new("TextLabel")
-CombatTitle.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-CombatTitle.Position = UDim2.new(0, 0, 0, 5)
-CombatTitle.BackgroundTransparency = 1
-CombatTitle.Text = "БОЙ"
-CombatTitle.TextColor3 = colors.accent
-CombatTitle.Font = Enum.Font.GothamBold
-CombatTitle.TextSize = ContainerHeight * 0.03
-CombatTitle.TextXAlignment = Enum.TextXAlignment.Left
-CombatTitle.Parent = CombatContainer
-
-local aimbotFrame, aimbotCheck = CreateXONECheckbox(CombatContainer, "Аимбот", ContainerHeight * 0.05, false, function(state)
-    AimbotEnabled = state
-    AimbotButton.Visible = state
-    
-    if not state then
-        AimbotActive = false
-        AimbotTarget = nil
-        AimbotButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-        AimbotIndicator.Visible = false
-    end
-end)
-
-local tpSlashFrame, tpSlashCheck = CreateXONECheckbox(CombatContainer, "TP Slash (Q) - орбита", ContainerHeight * 0.11, false, function(state)
-    TPSlashEnabled = state
-end)
-
-local tpHitFrame, tpHitCheck = CreateXONECheckbox(CombatContainer, "TP Hit (ЛКМ) - рывок к игроку", ContainerHeight * 0.17, false, function(state)
-    TPHitEnabled = state
-end)
-
-local infoLabel = Instance.new("TextLabel")
-infoLabel.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.12)
-infoLabel.Position = UDim2.new(0, 0, 0, ContainerHeight * 0.24)
-infoLabel.BackgroundTransparency = 1
-infoLabel.Text = "Аимбот: красная кнопка\nTP Slash: нажми Q\nTP Hit: нажми ЛКМ (рывок 0.2 сек)"
-infoLabel.TextColor3 = colors.text2
-infoLabel.Font = Enum.Font.Gotham
-infoLabel.TextSize = ContainerHeight * 0.025
-infoLabel.TextWrapped = true
-infoLabel.TextXAlignment = Enum.TextXAlignment.Left
-infoLabel.Parent = CombatContainer
-
--- ========== ITEMS TAB ==========
-local ItemsTitle = Instance.new("TextLabel")
-ItemsTitle.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-ItemsTitle.Position = UDim2.new(0, 0, 0, 5)
-ItemsTitle.BackgroundTransparency = 1
-ItemsTitle.Text = "ПРЕДМЕТЫ"
-ItemsTitle.TextColor3 = colors.accent
-ItemsTitle.Font = Enum.Font.GothamBold
-ItemsTitle.TextSize = ContainerHeight * 0.03
-ItemsTitle.TextXAlignment = Enum.TextXAlignment.Left
-ItemsTitle.Parent = ItemsContainer
-
-local soonLabel = Instance.new("TextLabel")
-soonLabel.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.1)
-soonLabel.Position = UDim2.new(0, 0, 0, ContainerHeight * 0.05)
-soonLabel.BackgroundTransparency = 1
-soonLabel.Text = "Скоро появятся новые предметы..."
-soonLabel.TextColor3 = colors.text2
-soonLabel.Font = Enum.Font.Gotham
-soonLabel.TextSize = ContainerHeight * 0.03
-soonLabel.TextXAlignment = Enum.TextXAlignment.Left
-soonLabel.Parent = ItemsContainer
+py = 5
+Check(VisualCont, "ESP (Подсветка)", py, false, function(v) ESPEnabled = v end)
 
 -- ========== TELEPORT TAB ==========
-local TeleportTitle = Instance.new("TextLabel")
-TeleportTitle.Size = UDim2.new(1, 0, 0, ContainerHeight * 0.05)
-TeleportTitle.Position = UDim2.new(0, 0, 0, 5)
-TeleportTitle.BackgroundTransparency = 1
-TeleportTitle.Text = "ТЕЛЕПОРТ К ИГРОКАМ"
-TeleportTitle.TextColor3 = colors.accent
-TeleportTitle.Font = Enum.Font.GothamBold
-TeleportTitle.TextSize = ContainerHeight * 0.03
-TeleportTitle.TextXAlignment = Enum.TextXAlignment.Left
-TeleportTitle.Parent = TeleportContainer
+local TeleList = Instance.new("ScrollingFrame")
+TeleList.Size = UDim2.new(1,0,1,-ContH*0.05)
+TeleList.Position = UDim2.new(0,0,0,ContH*0.05)
+TeleList.BackgroundColor3 = colors.bg2
+TeleList.BorderSizePixel = 1
+TeleList.BorderColor3 = colors.border
+TeleList.ScrollBarThickness = 4
+TeleList.ScrollBarImageColor3 = colors.accent
+TeleList.CanvasSize = UDim2.new(0,0,0,0)
+TeleList.Parent = TeleportCont
+local TeleCorner = Instance.new("UICorner")
+TeleCorner.CornerRadius = UDim.new(0,6)
+TeleCorner.Parent = TeleList
 
-local TeleportList = Instance.new("ScrollingFrame")
-TeleportList.Size = UDim2.new(1, 0, 1, -ContainerHeight * 0.07)
-TeleportList.Position = UDim2.new(0, 0, 0, ContainerHeight * 0.05)
-TeleportList.BackgroundColor3 = colors.bg2
-TeleportList.BorderSizePixel = 1
-TeleportList.BorderColor3 = colors.border
-TeleportList.ScrollBarThickness = 4
-TeleportList.ScrollBarImageColor3 = colors.accent
-TeleportList.CanvasSize = UDim2.new(0, 0, 0, 0)
-TeleportList.Parent = TeleportContainer
-
-local listCorner = Instance.new("UICorner")
-listCorner.CornerRadius = UDim.new(0, 6)
-listCorner.Parent = TeleportList
-
--- Функция обновления списка игроков
-local function UpdateTeleportList()
-    for _, child in pairs(TeleportList:GetChildren()) do
-        if child:IsA("Frame") then
-            child:Destroy()
-        end
-    end
-    
-    local yPos = 5
-    local playerCount = 0
-    
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            playerCount = playerCount + 1
-            
-            CreateTeleportButton(TeleportList, player.Name, yPos, function()
-                local targetChar = player.Character
-                local localChar = LocalPlayer.Character
-                
-                if targetChar and localChar and localChar:FindFirstChild("HumanoidRootPart") then
-                    local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
-                    local localRoot = localChar:FindFirstChild("HumanoidRootPart")
-                    
-                    if targetRoot then
-                        localRoot.CFrame = targetRoot.CFrame + Vector3.new(0, 3, 2)
-                        
-                        for _, part in pairs(localChar:GetChildren()) do
-                            if part:IsA("BasePart") and part ~= localRoot then
-                                part.CFrame = localRoot.CFrame
-                            end
+local function UpdateList()
+    for _, c in pairs(TeleList:GetChildren()) do if c:IsA("Frame") then c:Destroy() end end
+    local yp = 5
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            local f = Instance.new("Frame")
+            f.Size = UDim2.new(1,0,0, ContH*0.07)
+            f.Position = UDim2.new(0,0,0,yp)
+            f.BackgroundColor3 = colors.bg2
+            f.BorderSizePixel = 1
+            f.BorderColor3 = colors.border
+            f.Parent = TeleList
+            local fCorner = Instance.new("UICorner")
+            fCorner.CornerRadius = UDim.new(0,6)
+            fCorner.Parent = f
+            local name = Instance.new("TextLabel")
+            name.Size = UDim2.new(1,-80,1,0)
+            name.Position = UDim2.new(0,10,0,0)
+            name.BackgroundTransparency = 1
+            name.Text = p.Name
+            name.TextColor3 = colors.text
+            name.Font = Enum.Font.Gotham
+            name.TextSize = ContH*0.025
+            name.TextXAlignment = Enum.TextXAlignment.Left
+            name.Parent = f
+            local tp = Instance.new("TextButton")
+            tp.Size = UDim2.new(0,55,0, ContH*0.04)
+            tp.Position = UDim2.new(1,-65,0.5, -ContH*0.02)
+            tp.BackgroundColor3 = colors.accent
+            tp.Text = "ТП"
+            tp.TextColor3 = colors.text
+            tp.Font = Enum.Font.GothamBold
+            tp.TextSize = ContH*0.022
+            tp.Parent = f
+            local tpCorner = Instance.new("UICorner")
+            tpCorner.CornerRadius = UDim.new(0,5)
+            tpCorner.Parent = tp
+            tp.MouseButton1Click:Connect(function()
+                local tc = p.Character
+                local lc = LocalPlayer.Character
+                if tc and lc and lc:FindFirstChild("HumanoidRootPart") then
+                    local tr = tc:FindFirstChild("HumanoidRootPart")
+                    local lr = lc:FindFirstChild("HumanoidRootPart")
+                    if tr then
+                        lr.CFrame = tr.CFrame + Vector3.new(0,3,2)
+                        for _, pt in pairs(lc:GetChildren()) do
+                            if pt:IsA("BasePart") and pt ~= lr then pt.CFrame = lr.CFrame end
                         end
                     end
                 end
             end)
-            
-            yPos = yPos + ContainerHeight * 0.09
+            yp = yp + ContH*0.08
         end
     end
-    
-    if playerCount == 0 then
-        local noPlayers = Instance.new("TextLabel")
-        noPlayers.Size = UDim2.new(1, -20, 0, 40)
-        noPlayers.Position = UDim2.new(0, 10, 0, 10)
-        noPlayers.BackgroundTransparency = 1
-        noPlayers.Text = "Нет игроков"
-        noPlayers.TextColor3 = colors.text2
-        noPlayers.Font = Enum.Font.Gotham
-        noPlayers.TextSize = ContainerHeight * 0.035
-        noPlayers.Parent = TeleportList
-    end
-    
-    TeleportList.CanvasSize = UDim2.new(0, 0, 0, yPos + 10)
+    TeleList.CanvasSize = UDim2.new(0,0,0, yp+10)
 end
 
--- ========== CTRL+CLICK TP ==========
-local Mouse = LocalPlayer:GetMouse()
+-- ========== COMBAT TAB ==========
+py = 5
+Check(CombatCont, "Аимбот", py, false, function(v)
+    AimbotEnabled = v
+    AimBtn.Visible = v
+    if not v then
+        AimbotActive = false
+        AimbotTarget = nil
+        AimBtn.BackgroundColor3 = Color3.fromRGB(200,50,50)
+        AimInd.Visible = false
+    end
+end)
+py = py + ContH*0.05
+Check(CombatCont, "Auto Block", py, false, function(v) AutoBlockEnabled = v end)
+py = py + ContH*0.05
+Check(CombatCont, "Auto Punch", py, false, function(v) AutoPunchEnabled = v end)
+py = py + ContH*0.05
+Check(CombatCont, "⚔️ TP Slash Shedletsky (Q)", py, false, function(v) TPShedEnabled = v end)
+py = py + ContH*0.05
+Check(CombatCont, "TP Hit (ЛКМ) - рывок", py, false, function(v) TPHitEnabled = v end)
 
-Mouse.Button1Down:Connect(function()
-    if not CtrlClickTPEnabled then return end
-    if not UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then return end
-    if not Mouse.Target then return end
-    
-    local character = LocalPlayer.Character
-    if not character then return end
-    
-    character:MoveTo(Mouse.Hit.p)
-    
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    if rootPart then
-        rootPart.CFrame = CFrame.new(Mouse.Hit.p + Vector3.new(0, 3, 0))
+-- ========== ОБРАБОТЧИКИ ==========
+UserInputService.InputBegan:Connect(function(inp, gp)
+    if gp then return end
+    if inp.KeyCode == Enum.KeyCode.Q then
+        if TPShedEnabled and not TPShedCooldown then shedSlash() end
+    end
+    if inp.KeyCode == Enum.KeyCode.Insert then
+        MenuVisible = not MenuVisible
+        Main.Visible = MenuVisible
     end
 end)
 
--- ========== TP SLASH ==========
-local function getFirstKiller()
-    local playersFolder = workspace:FindFirstChild("Players")
-    if not playersFolder then return nil end
-    
-    local killersFolder = playersFolder:FindFirstChild("Killers")
-    if not killersFolder then return nil end
-    
-    for _, killer in ipairs(killersFolder:GetChildren()) do
-        if killer:IsA("Model") and killer:FindFirstChild("HumanoidRootPart") then
-            return killer
-        end
-    end
-    return nil
-end
-
-local function orbitKiller()
-    if TPSlashCooldown then return end
-    
-    local killer = getFirstKiller()
-    if not killer then 
-        return 
-    end
-    
-    local character = LocalPlayer.Character
-    if not character then return end
-    
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    local killerHRP = killer:FindFirstChild("HumanoidRootPart")
-    
-    if not rootPart or not killerHRP then return end
-    
-    TPSlashCooldown = true
-    
-    -- Сохраняем исходную позицию
-    local originalCFrame = rootPart.CFrame
-    local startTime = tick()
-    local center = killerHRP.Position
-    
-    -- Создаем эффект свечения
-    local beam = Instance.new("Part")
-    beam.Size = Vector3.new(1, 1, 1)
-    beam.BrickColor = BrickColor.new("Bright violet")
-    beam.Material = Enum.Material.Neon
-    beam.Anchored = true
-    beam.CanCollide = false
-    beam.Parent = workspace
-    
-    -- Основной цикл орбиты
-    while (tick() - startTime) < ORBIT_DURATION do
-        local elapsed = tick() - startTime
-        local angle = elapsed * math.pi * ORBIT_SPEED
-        
-        -- Позиция на орбите
-        local orbitPos = center + Vector3.new(
-            math.cos(angle) * ORBIT_RADIUS,
-            ORBIT_HEIGHT + math.sin(angle * 2) * 1,
-            math.sin(angle) * ORBIT_RADIUS
-        )
-        
-        -- Плавное перемещение
-        rootPart.CFrame = CFrame.new(orbitPos, center)
-        
-        -- Перемещаем остальные части
-        for _, part in pairs(character:GetChildren()) do
-            if part:IsA("BasePart") and part ~= rootPart then
-                part.CFrame = rootPart.CFrame
-            end
-        end
-        
-        -- Анимируем эффект
-        beam.Position = orbitPos
-        beam.Size = Vector3.new(2 + math.sin(elapsed * 10) * 1, 2 + math.sin(elapsed * 10) * 1, 2 + math.sin(elapsed * 10) * 1)
-        
-        task.wait(0.02)
-    end
-    
-    -- Возвращаемся на исходную позицию
-    if rootPart and rootPart.Parent then
-        rootPart.CFrame = originalCFrame
-        
-        for _, part in pairs(character:GetChildren()) do
-            if part:IsA("BasePart") and part ~= rootPart then
-                part.CFrame = rootPart.CFrame
-            end
-        end
-    end
-    
-    -- Убираем эффект
-    beam:Destroy()
-    
-    task.delay(ORBIT_COOLDOWN, function()
-        TPSlashCooldown = false
-    end)
-end
-
--- ========== TP HIT ПО ЛКМ ==========
-local function getRandomPlayer()
-    local players = {}
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local humanoid = player.Character:FindFirstChild("Humanoid")
-            if humanoid and humanoid.Health > 0 then
-                table.insert(players, player)
-            end
-        end
-    end
-    
-    if #players > 0 then
-        return players[math.random(1, #players)]
-    end
-    return nil
-end
-
-local function tpHitRush()
-    if TPHitCooldown then return end
-    if not TPHitEnabled then return end
-    
-    local target = getRandomPlayer()
-    if not target then return end
-    
-    local character = LocalPlayer.Character
-    if not character then return end
-    
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    local targetChar = target.Character
-    local targetRoot = targetChar and targetChar:FindFirstChild("HumanoidRootPart")
-    
-    if not rootPart or not targetRoot then return end
-    
-    TPHitCooldown = true
-    
-    -- Сохраняем оригинальную позицию
-    local originalCFrame = rootPart.CFrame
-    
-    -- Телепортируемся к игроку
-    rootPart.CFrame = targetRoot.CFrame + Vector3.new(2, 1, 2)
-    
-    -- Синхронизируем остальные части
-    for _, part in pairs(character:GetChildren()) do
-        if part:IsA("BasePart") and part ~= rootPart then
-            part.CFrame = rootPart.CFrame
-        end
-    end
-    
-    -- Ждем 0.2 секунды
-    task.wait(TP_HIT_DURATION)
-    
-    -- Возвращаемся обратно
-    if rootPart and rootPart.Parent then
-        rootPart.CFrame = originalCFrame
-        
-        for _, part in pairs(character:GetChildren()) do
-            if part:IsA("BasePart") and part ~= rootPart then
-                part.CFrame = rootPart.CFrame
-            end
-        end
-    end
-    
-    -- Кулдаун
-    task.delay(TP_HIT_COOLDOWN, function()
-        TPHitCooldown = false
-    end)
-end
-
--- Обработка ЛКМ для TP Hit
-Mouse.Button1Down:Connect(function()
-    if TPHitEnabled and not CtrlClickTPEnabled then
-        tpHitRush()
-    end
-end)
-
--- ========== ОБРАБОТКА НАЖАТИЙ ==========
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    
-    if input.KeyCode == Enum.KeyCode.Q and TPSlashEnabled and not TPSlashCooldown then
-        orbitKiller()
-    end
-end)
-
--- ========== ЛОГИКА КНОПКИ АИМБОТА ==========
-AimbotButton.MouseButton1Click:Connect(function()
+AimBtn.MouseButton1Click:Connect(function()
     if not AimbotEnabled then return end
-    
     AimbotActive = not AimbotActive
-    
     if AimbotActive then
-        AimbotButton.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
-        AimbotIndicator.Visible = true
+        AimBtn.BackgroundColor3 = Color3.fromRGB(50,200,50)
+        AimInd.Visible = true
         AimbotTarget = GetNearestPlayer()
     else
-        AimbotButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-        AimbotIndicator.Visible = false
+        AimBtn.BackgroundColor3 = Color3.fromRGB(200,50,50)
+        AimInd.Visible = false
         AimbotTarget = nil
     end
 end)
 
--- ========== ESP ФУНКЦИИ ==========
-local function createHighlight(model, outlineColor, fillColor)
-    for _, existing in pairs(model:GetChildren()) do
-        if existing:IsA("Highlight") then
-            existing:Destroy()
-        end
-    end
-    
-    local highlight = Instance.new("Highlight")
-    highlight.Parent = model
-    highlight.Adornee = model
-    highlight.FillTransparency = 0.65
-    highlight.FillColor = fillColor
-    highlight.OutlineColor = outlineColor
-    highlight.OutlineTransparency = 0
-    
-    table.insert(ESPHighlights, highlight)
-    
-    return highlight
-end
-
-local function highlightGroup(group, outlineColor, fillColor)
-    if group then
-        for _, obj in pairs(group:GetChildren()) do
-            local humanoid = obj:FindFirstChildOfClass("Humanoid")
-            if humanoid and obj:FindFirstChild("HumanoidRootPart") and humanoid.Health > 0 then
-                createHighlight(obj, outlineColor, fillColor)
-            end
-        end
-    end
-end
-
-local function highlightGenerators()
-    local generatorsFolder = workspace:FindFirstChild("Map") and 
-                             workspace.Map:FindFirstChild("Ingame") and 
-                             workspace.Map.Ingame:FindFirstChild("Map")
-
-    if generatorsFolder then
-        for _, obj in pairs(generatorsFolder:GetChildren()) do
-            if obj:IsA("Model") and obj.Name == "Generator" then
-                createHighlight(obj, Color3.new(1, 1, 0), Color3.new(1, 1, 0.5))
-            end
-        end
-    end
-end
-
-local function highlightOtherPlayers()
-    local playersGroup = workspace:FindFirstChild("Players")
-    if not playersGroup then return end
-    
-    local killersGroup = playersGroup:FindFirstChild("Killers")
-    local survivorsGroup = playersGroup:FindFirstChild("Survivors")
-    
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local character = player.Character
-            local humanoid = character:FindFirstChild("Humanoid")
-            
-            if humanoid and humanoid.Health > 0 then
-                local isInGroup = false
-                
-                if killersGroup then
-                    for _, obj in pairs(killersGroup:GetChildren()) do
-                        if obj == character then
-                            isInGroup = true
-                            break
-                        end
-                    end
-                end
-                
-                if not isInGroup and survivorsGroup then
-                    for _, obj in pairs(survivorsGroup:GetChildren()) do
-                        if obj == character then
-                            isInGroup = true
-                            break
-                        end
-                    end
-                end
-                
-                if not isInGroup then
-                    createHighlight(character, Color3.new(1, 1, 1), Color3.new(0.8, 0.8, 0.8))
-                end
-            end
-        end
-    end
-end
-
-local function clearAllHighlights()
-    for _, highlight in pairs(ESPHighlights) do
-        pcall(function()
-            highlight:Destroy()
-        end)
-    end
-    ESPHighlights = {}
-end
-
-local function updateESP()
-    if not ESPEnabled then 
-        clearAllHighlights()
-        return 
-    end
-    
-    clearAllHighlights()
-    
-    local playersGroup = workspace:FindFirstChild("Players")
-    if playersGroup then
-        local killersGroup = playersGroup:FindFirstChild("Killers")
-        highlightGroup(killersGroup, Color3.new(1, 0, 0), Color3.new(1, 0.5, 0.5))
-        
-        local survivorsGroup = playersGroup:FindFirstChild("Survivors")
-        highlightGroup(survivorsGroup, Color3.new(0, 1, 0), Color3.new(0.5, 1, 0.5))
-    end
-    
-    highlightOtherPlayers()
-    highlightGenerators()
-end
-
--- Оптимизированный цикл ESP
-spawn(function()
-    while true do
-        local currentTime = tick()
-        if currentTime - LastESPUpdate >= ESPUpdateInterval then
-            pcall(updateESP)
-            LastESPUpdate = currentTime
-        end
-        wait(0.5)
-    end
-end)
-
--- ========== AIMBOT ФУНКЦИЯ ==========
-function GetNearestPlayer()
-    local nearestPlayer = nil
-    local shortestDistance = math.huge
-    local localChar = LocalPlayer.Character
-    local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
-    
-    if not localRoot then return nil end
-    
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local targetChar = player.Character
-            local targetRoot = targetChar:FindFirstChild("HumanoidRootPart")
-            local humanoid = targetChar:FindFirstChild("Humanoid")
-            
-            if targetRoot and humanoid and humanoid.Health > 0 then
-                local screenPos, onScreen = Camera:WorldToViewportPoint(targetRoot.Position)
-                local distance = (localRoot.Position - targetRoot.Position).Magnitude
-                
-                if onScreen and distance < 150 then
-                    local ray = Ray.new(Camera.CFrame.Position, (targetRoot.Position - Camera.CFrame.Position).Unit * distance)
-                    local hit, pos = workspace:FindPartOnRayWithIgnoreList(ray, {localChar, Camera})
-                    
-                    if hit == nil or hit:IsDescendantOf(targetChar) then
-                        if distance < shortestDistance then
-                            shortestDistance = distance
-                            nearestPlayer = player
-                        end
-                    end
-                end
-            end
-        end
-    end
-    
-    return nearestPlayer
-end
-
 RunService.RenderStepped:Connect(function()
     if AimbotEnabled and AimbotActive and AimbotTarget then
-        if AimbotTarget.Character and AimbotTarget.Character:FindFirstChild("Head") and 
-           AimbotTarget.Character:FindFirstChild("Humanoid") and 
-           AimbotTarget.Character.Humanoid.Health > 0 then
-            
-            local headPos = AimbotTarget.Character.Head.Position
-            local localChar = LocalPlayer.Character
-            local humanoid = localChar and localChar:FindFirstChild("Humanoid")
-            
-            if humanoid and humanoid.Health > 0 then
-                local lookAt = CFrame.lookAt(Camera.CFrame.Position, headPos)
-                Camera.CFrame = Camera.CFrame:Lerp(lookAt, 0.5)
+        local t = AimbotTarget.Character
+        if t and t:FindFirstChild("Head") and t:FindFirstChild("Humanoid") and t.Humanoid.Health > 0 then
+            local pos = t.Head.Position
+            local lc = LocalPlayer.Character
+            local h = lc and lc:FindFirstChild("Humanoid")
+            if h and h.Health > 0 then
+                Camera.CFrame = Camera.CFrame:Lerp(CFrame.lookAt(Camera.CFrame.Position, pos), 0.5)
             end
         else
             AimbotTarget = GetNearestPlayer()
@@ -1373,234 +820,117 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- ========== ОБНОВЛЕНИЕ СПИСКА ==========
-spawn(function()
-    while true do
-        if CurrentTab == "ТЕЛЕПОРТ" then
-            pcall(UpdateTeleportList)
+RunService.Heartbeat:Connect(function()
+    local kf = workspace:FindFirstChild("Players") and workspace.Players:FindFirstChild("Killers")
+    if not kf then return end
+    local r = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not r then return end
+    for _, k in pairs(kf:GetChildren()) do
+        local hrp = k:FindFirstChild("HumanoidRootPart")
+        if hrp and (hrp.Position - r.Position).Magnitude < 12 then
+            tryBlock()
+            tryPunch()
+            break
         end
-        wait(2)
     end
 end)
 
--- ========== ПЕРЕКЛЮЧЕНИЕ ВКЛАДОК ==========
+Mouse.Button1Down:Connect(function()
+    if CtrlClickTPEnabled and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) and Mouse.Target then
+        local c = LocalPlayer.Character
+        if c then
+            c:MoveTo(Mouse.Hit.p)
+            local r = c:FindFirstChild("HumanoidRootPart")
+            if r then r.CFrame = CFrame.new(Mouse.Hit.p + Vector3.new(0,3,0)) end
+        end
+    end
+end)
+Mouse.Button1Down:Connect(function()
+    if TPHitEnabled and not CtrlClickTPEnabled then tpHit() end
+end)
+
+RunService.RenderStepped:Connect(function() pcall(UpdateFly) end)
+spawn(function() while true do pcall(updateESP); wait(0.5) end end)
+spawn(function() while true do if CurrentTab == "ТЕЛЕПОРТ" then pcall(UpdateList) end; wait(2) end end)
+
 PlayerTab.MouseButton1Click:Connect(function()
     CurrentTab = "ИГРОК"
     PlayerTab.TextColor3 = colors.accent
     VisualTab.TextColor3 = colors.text2
     TeleportTab.TextColor3 = colors.text2
     CombatTab.TextColor3 = colors.text2
-    ItemsTab.TextColor3 = colors.text2
-    PlayerContainer.Visible = true
-    VisualContainer.Visible = false
-    TeleportContainer.Visible = false
-    CombatContainer.Visible = false
-    ItemsContainer.Visible = false
-    
-    TweenService:Create(TabIndicator, TweenInfo.new(0.2), {Position = UDim2.new(0, 8, 1, -2)}):Play()
+    PlayerCont.Visible = true
+    VisualCont.Visible = false
+    TeleportCont.Visible = false
+    CombatCont.Visible = false
+    TweenService:Create(TabInd, TweenInfo.new(0.2), {Position = UDim2.new(0,8,1,-2)}):Play()
 end)
-
 VisualTab.MouseButton1Click:Connect(function()
     CurrentTab = "ВИЗУАЛ"
     PlayerTab.TextColor3 = colors.text2
     VisualTab.TextColor3 = colors.accent
     TeleportTab.TextColor3 = colors.text2
     CombatTab.TextColor3 = colors.text2
-    ItemsTab.TextColor3 = colors.text2
-    PlayerContainer.Visible = false
-    VisualContainer.Visible = true
-    TeleportContainer.Visible = false
-    CombatContainer.Visible = false
-    ItemsContainer.Visible = false
-    
-    TweenService:Create(TabIndicator, TweenInfo.new(0.2), {Position = UDim2.new(0, 12 + TabWidth, 1, -2)}):Play()
+    PlayerCont.Visible = false
+    VisualCont.Visible = true
+    TeleportCont.Visible = false
+    CombatCont.Visible = false
+    TweenService:Create(TabInd, TweenInfo.new(0.2), {Position = UDim2.new(0,12+TabW,1,-2)}):Play()
 end)
-
 TeleportTab.MouseButton1Click:Connect(function()
     CurrentTab = "ТЕЛЕПОРТ"
     PlayerTab.TextColor3 = colors.text2
     VisualTab.TextColor3 = colors.text2
     TeleportTab.TextColor3 = colors.accent
     CombatTab.TextColor3 = colors.text2
-    ItemsTab.TextColor3 = colors.text2
-    PlayerContainer.Visible = false
-    VisualContainer.Visible = false
-    TeleportContainer.Visible = true
-    CombatContainer.Visible = false
-    ItemsContainer.Visible = false
-    
-    TweenService:Create(TabIndicator, TweenInfo.new(0.2), {Position = UDim2.new(0, 16 + (TabWidth * 2), 1, -2)}):Play()
-    UpdateTeleportList()
+    PlayerCont.Visible = false
+    VisualCont.Visible = false
+    TeleportCont.Visible = true
+    CombatCont.Visible = false
+    TweenService:Create(TabInd, TweenInfo.new(0.2), {Position = UDim2.new(0,16+TabW*2,1,-2)}):Play()
+    UpdateList()
 end)
-
 CombatTab.MouseButton1Click:Connect(function()
     CurrentTab = "БОЙ"
     PlayerTab.TextColor3 = colors.text2
     VisualTab.TextColor3 = colors.text2
     TeleportTab.TextColor3 = colors.text2
     CombatTab.TextColor3 = colors.accent
-    ItemsTab.TextColor3 = colors.text2
-    PlayerContainer.Visible = false
-    VisualContainer.Visible = false
-    TeleportContainer.Visible = false
-    CombatContainer.Visible = true
-    ItemsContainer.Visible = false
-    
-    TweenService:Create(TabIndicator, TweenInfo.new(0.2), {Position = UDim2.new(0, 20 + (TabWidth * 3), 1, -2)}):Play()
+    PlayerCont.Visible = false
+    VisualCont.Visible = false
+    TeleportCont.Visible = false
+    CombatCont.Visible = true
+    TweenService:Create(TabInd, TweenInfo.new(0.2), {Position = UDim2.new(0,20+TabW*3,1,-2)}):Play()
 end)
 
-ItemsTab.MouseButton1Click:Connect(function()
-    CurrentTab = "ПРЕДМЕТЫ"
-    PlayerTab.TextColor3 = colors.text2
-    VisualTab.TextColor3 = colors.text2
-    TeleportTab.TextColor3 = colors.text2
-    CombatTab.TextColor3 = colors.text2
-    ItemsTab.TextColor3 = colors.accent
-    PlayerContainer.Visible = false
-    VisualContainer.Visible = false
-    TeleportContainer.Visible = false
-    CombatContainer.Visible = false
-    ItemsContainer.Visible = true
-    
-    TweenService:Create(TabIndicator, TweenInfo.new(0.2), {Position = UDim2.new(0, 24 + (TabWidth * 4), 1, -2)}):Play()
-end)
-
--- ========== УПРАВЛЕНИЕ МЕНЮ ==========
-OpenButton.MouseButton1Click:Connect(function()
+OpenBtn.MouseButton1Click:Connect(function()
     MenuVisible = not MenuVisible
-    MainFrame.Visible = MenuVisible
+    Main.Visible = MenuVisible
 end)
-
-CloseButton.MouseButton1Click:Connect(function()
+Close.MouseButton1Click:Connect(function()
     MenuVisible = false
-    MainFrame.Visible = false
+    Main.Visible = false
 end)
 
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if gameProcessed then return end
-    if input.KeyCode == Enum.KeyCode.Insert then
-        MenuVisible = not MenuVisible
-        MainFrame.Visible = MenuVisible
-    end
-end)
-
--- ========== FLY ЛОГИКА ==========
-local function UpdateFly()
-    if not FlyEnabled then return end
-    
-    local character = LocalPlayer.Character
-    if not character or not character:FindFirstChild("HumanoidRootPart") then
-        if BodyFly then
-            BodyFly:Destroy()
-            BodyFly = nil
-        end
-        return
-    end
-    
-    local rootPart = character.HumanoidRootPart
-    local humanoid = character:FindFirstChild("Humanoid")
-    
-    if humanoid then
-        humanoid.PlatformStand = true
-    end
-    
-    local moveVector = Vector3.new(0, 0, 0)
-    
-    if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-        moveVector = moveVector + Camera.CFrame.LookVector
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-        moveVector = moveVector - Camera.CFrame.LookVector
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-        moveVector = moveVector - Camera.CFrame.RightVector
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-        moveVector = moveVector + Camera.CFrame.RightVector
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.Space) then
-        moveVector = moveVector + Vector3.new(0, 1, 0)
-    end
-    if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
-        moveVector = moveVector + Vector3.new(0, -1, 0)
-    end
-    
-    if moveVector.Magnitude > 0 then
-        moveVector = moveVector.Unit * 75
-    end
-    
-    if BodyFly then
-        BodyFly.Velocity = moveVector
-    end
-end
-
--- Сброс при смерти
 LocalPlayer.CharacterAdded:Connect(function()
-    if BodyFly then
-        BodyFly:Destroy()
-        BodyFly = nil
-    end
+    if BodyFly then BodyFly:Destroy(); BodyFly = nil end
     FlyEnabled = false
-    if flyCheck then flyCheck.Visible = false end
-    
-    if TPWalkConnection then
-        TPWalkConnection:Disconnect()
-        TPWalkConnection = nil
-    end
-    TPWalkEnabled = false
-    if tpCheck then tpCheck.Visible = false end
-    
-    -- Останавливаем режим бога при смерти
-    if GodModeLoop then
-        GodModeLoop:Disconnect()
-        GodModeLoop = nil
-    end
+    if GodModeLoop then GodModeLoop:Disconnect(); GodModeLoop = nil end
     GodModeEnabled = false
-    if godCheck then godCheck.Visible = false end
-    
-    -- Останавливаем бесконечный телепорт при смерти
-    if InfiniteUpLoop then
-        InfiniteUpLoop:Disconnect()
-        InfiniteUpLoop = nil
-    end
-    InfiniteUpTeleportEnabled = false
-    if infiniteCheck then infiniteCheck.Visible = false end
-    
+    if InfiniteUpLoop then InfiniteUpLoop:Disconnect(); InfiniteUpLoop = nil end
+    InfiniteUpEnabled = false
+    if Speed05Conn then Speed05Conn:Disconnect(); Speed05Conn = nil end
+    Speed05Enabled = false
+    if Speed1Conn then Speed1Conn:Disconnect(); Speed1Conn = nil end
+    Speed1Enabled = false
     AimbotTarget = nil
     AimbotActive = false
     if AimbotEnabled then
-        AimbotButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-        AimbotIndicator.Visible = false
+        AimBtn.BackgroundColor3 = Color3.fromRGB(200,50,50)
+        AimInd.Visible = false
     end
-    
-    TPSlashCooldown = false
+    TPShedCooldown = false
     TPHitCooldown = false
 end)
 
--- Главный цикл
-RunService.RenderStepped:Connect(function()
-    pcall(UpdateFly)
-end)
 
-print([[
-
-    ╔══════════════════════════════════════╗
-    ║      XONE MOBILE v29.0              ║
-    ║                                      ║
-    ║  НОВЫЙ РЕЖИМ БОГА:                   ║
-    ║  👑 РЕЖИМ БОГА (В ЦИКЛЕ)             ║
-    ║     - MaxHealth = math.huge          ║
-    ║     - Health = math.huge             ║
-    ║     - Постоянный цикл поддержки      ║
-    ║     - Работает при возрождении       ║
-    ║                                      ║
-    ║  ФУНКЦИИ:                            ║
-    ║  🏃 Полет | 🧱 Ноклип                ║
-    ║  🚶 ТП Ходьба | 🖱️ Ctrl+Click TP     ║
-    ║  ⚔️ TP Slash (Q) | 🏃 TP Hit (ЛКМ)   ║
-    ║  🎯 Аимбот | 🔴 ESP                  ║
-    ║  ∞ Бесконечный телепорт наверх       ║
-    ║                                      ║
-    ║  [КНОПКА X] - Открыть меню           ║
-    ╚══════════════════════════════════════╝
-]])
